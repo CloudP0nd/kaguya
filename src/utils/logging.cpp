@@ -1,0 +1,1 @@
+// Kaguya — logging: placeholder stub

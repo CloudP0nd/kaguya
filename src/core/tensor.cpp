@@ -1,0 +1,1 @@
+// Kaguya — tensor: placeholder stub

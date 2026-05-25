@@ -1,0 +1,1 @@
+// Kaguya — temperature: placeholder stub

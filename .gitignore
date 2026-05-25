@@ -1,0 +1,34 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (large files)
+*.gguf
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+
+# Benchmarks data
+benchmarks/results/

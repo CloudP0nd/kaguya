@@ -1,0 +1,1 @@
+// Kaguya — transformer: placeholder stub

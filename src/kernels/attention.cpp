@@ -1,0 +1,1 @@
+// Kaguya — attention: placeholder stub
