@@ -1,4 +1,4 @@
-#include "kaguya/thread_affinity.h"
+#include "kaguya/memory/thread_affinity.h"
 #include "kaguya/cpu_features.h"
 
 #ifdef __linux__

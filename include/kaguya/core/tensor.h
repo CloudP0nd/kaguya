@@ -18,6 +18,8 @@ enum class DataType {
     Q5_1,
     Q8_0,
     Q8_1,
+    Q2_K,
+    Q3_K,
     IQ4_NL,
     IQ4_XS,
     IQ3_XXS,
@@ -32,6 +34,7 @@ enum class DataType {
     Q4_K,
     Q5_K,
     Q6_K,
+    Q8_K,
     TQ1_0,
     TQ2_0,
 };

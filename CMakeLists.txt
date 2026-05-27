@@ -34,6 +34,10 @@ add_library(kaguya_core
     src/core/engine.cpp
     src/core/tensor.cpp
     src/core/context.cpp
+    src/core/cpu_features.cpp
+    src/memory/memory_manager.cpp
+    src/memory/thread_pool.cpp
+    src/memory/thread_affinity.cpp
 )
 
 target_include_directories(kaguya_core PUBLIC

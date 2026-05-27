@@ -1,5 +1,5 @@
-#include "kaguya/thread_pool.h"
-#include "kaguya/thread_affinity.h"
+#include "kaguya/memory/thread_pool.h"
+#include "kaguya/memory/thread_affinity.h"
 #include "kaguya/cpu_features.h"
 
 #include <algorithm>
