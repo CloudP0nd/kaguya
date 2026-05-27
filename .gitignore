@@ -1,7 +1,10 @@
-# Build directories
+# Build artifacts
 build/
-cmake-build-*/
-out/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
 
 # IDE
 .vscode/
@@ -10,25 +13,14 @@ out/
 *.swo
 *~
 
-# Compiled
-*.o
-*.a
-*.so
-*.dylib
-*.exe
-
 # OS
 .DS_Store
 Thumbs.db
 
-# Models (large files)
-*.gguf
-*.bin
-*.safetensors
+# Binaries
+kaguya-cli
+kaguya_tests
+kaguya_bench
 
-# Python
-__pycache__/
-*.pyc
-
-# Benchmarks data
-benchmarks/results/
+# Dependencies
+_deps/

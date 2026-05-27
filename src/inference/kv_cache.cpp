@@ -1,5 +1,5 @@
 namespace kaguya {
 
-// RoPE kernel — Phase 3 implementation
+// KV Cache — Phase 4 implementation
 
 } // namespace kaguya

@@ -1,115 +1,122 @@
-cmake_minimum_required(VERSION 3.20)
-project(kaguya
-    VERSION 0.1.0
-    DESCRIPTION "Kaguya — High-performance CPU LLM inference engine"
-    LANGUAGES CXX
-)
+cmake_minimum_required(VERSION 3.25)
+project(kaguya VERSION 0.1.0 LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build type
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Compiler flags
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
+# Optimization flags for Release
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -flto=auto")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -fsanitize=address,undefined")
 endif()
 
-# Platform-specific SIMD detection
-include(CheckCXXSourceCompiles)
-include(cmake/DetectSIMD.cmake)
+# Warning flags
+add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 
-# Third-party dependencies
-# ggml (for GGUF model loading compatibility)
-# add_subdirectory(third_party/ggml)
+# ---- Platform detection ----
 
-# Kaguya core library
-add_library(kaguya_core
-    src/core/engine.cpp
-    src/core/tensor.cpp
-    src/core/context.cpp
+# Check for NUMA support
+include(CheckIncludeFileCXX)
+check_include_file_cxx("numa.h" KAGUYA_HAS_NUMA)
+if(KAGUYA_HAS_NUMA)
+    message(STATUS "NUMA support: YES")
+    add_compile_definitions(KAGUYA_HAS_NUMA)
+else()
+    message(STATUS "NUMA support: NO (install libnuma-dev for NUMA support)")
+endif()
+
+# ---- Dependencies ----
+
+# Google Test
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+# Google Benchmark
+FetchContent_Declare(
+    googlebenchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG        v1.8.3
+)
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googlebenchmark)
+
+# ---- Library ----
+
+set(KAGUYA_SOURCES
     src/core/cpu_features.cpp
-    src/memory/memory_manager.cpp
-    src/memory/thread_pool.cpp
-    src/memory/thread_affinity.cpp
-)
-
-target_include_directories(kaguya_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_compile_options(kaguya_core PRIVATE ${SIMD_COMPILE_FLAGS})
-
-# Kaguya kernels library
-add_library(kaguya_kernels
-    src/kernels/transformer.cpp
-    src/kernels/attention.cpp
-    src/kernels/ffn.cpp
-    src/kernels/rmsnorm.cpp
+    src/core/tensor.cpp
+    src/core/model.cpp
+    src/core/context.cpp
+    src/loaders/gguf_loader.cpp
+    src/loaders/model_loader.cpp
+    src/loaders/gguf_parser.cpp
+    src/loaders/gguf_tensor.cpp
+    src/kernels/dispatcher.cpp
+    src/kernels/gemm_amx.cpp
+    src/kernels/gemm_avx512.cpp
+    src/kernels/gemm_avx2.cpp
+    src/kernels/gemm_scalar.cpp
+    src/kernels/quantize.cpp
+    src/kernels/softmax.cpp
+    src/kernels/norm.cpp
     src/kernels/rope.cpp
-    src/kernels/mul_mat.cpp
-)
-
-target_link_libraries(kaguya_kernels PUBLIC kaguya_core)
-
-# Kaguya quantization library
-add_library(kaguya_quant
-    src/quantization/gguf_loader.cpp
-    src/quantization/quantizer.cpp
-)
-
-target_link_libraries(kaguya_quant PUBLIC kaguya_core)
-
-# Kaguya sampling library
-add_library(kaguya_sampling
+    src/kernels/activation.cpp
+    src/runtime/memory_manager.cpp
+    src/runtime/thread_pool.cpp
+    src/runtime/thread_affinity.cpp
+    src/inference/pipeline.cpp
+    src/inference/kv_cache.cpp
+    src/inference/attention.cpp
+    src/inference/batch.cpp
     src/sampling/sampler.cpp
-    src/sampling/top_k.cpp
-    src/sampling/top_p.cpp
-    src/sampling/temperature.cpp
-    src/sampling/repetition_penalty.cpp
 )
 
-target_link_libraries(kaguya_sampling PUBLIC kaguya_core)
-
-# Kaguya memory management
-add_library(kaguya_memory
-    src/memory/buf_manager.cpp
-    src/memory/kv_cache.cpp
+add_library(kaguya STATIC ${KAGUYA_SOURCES})
+target_include_directories(kaguya PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
+target_link_libraries(kaguya PRIVATE pthread)
 
-target_link_libraries(kaguya_memory PUBLIC kaguya_core)
+# ---- CLI ----
 
-# Kaguya model loader
-add_library(kaguya_model
-    src/model/loader.cpp
-    src/model/hparams.cpp
-    src/model/weights.cpp
+add_executable(kaguya-cli src/cli/main.cpp)
+target_link_libraries(kaguya-cli PRIVATE kaguya)
+
+# ---- Tests ----
+
+enable_testing()
+
+add_executable(kaguya_tests
+    tests/unit/test_cpu_features.cpp
+    tests/unit/test_gguf_parser.cpp
+    tests/unit/test_gemm.cpp
+    tests/unit/test_quantize.cpp
+    tests/unit/test_kv_cache.cpp
+    tests/integration/test_inference.cpp
 )
+target_link_libraries(kaguya_tests PRIVATE kaguya GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(kaguya_tests)
 
-target_link_libraries(kaguya_model PUBLIC kaguya_core kaguya_quant)
+# ---- Benchmarks ----
 
-# CLI executable
-add_executable(kaguya-cli src/main.cpp)
-target_link_libraries(kaguya-cli
-    PRIVATE kaguya_core kaguya_kernels kaguya_quant
-    kaguya_sampling kaguya_memory kaguya_model
+add_executable(kaguya_bench
+    benchmarks/bench_gemm.cpp
+    benchmarks/bench_quantize.cpp
+    benchmarks/bench_inference.cpp
 )
-
-# Testing
-option(KAGUYA_BUILD_TESTS "Build tests" ON)
-if(KAGUYA_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
-
-# Benchmarks
-option(KAGUYA_BUILD_BENCHMARKS "Build benchmarks" ON)
-if(KAGUYA_BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
-endif()
+target_link_libraries(kaguya_bench PRIVATE kaguya benchmark::benchmark)

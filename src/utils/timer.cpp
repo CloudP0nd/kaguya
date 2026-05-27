@@ -1,1 +1,0 @@
-// Kaguya — timer: placeholder stub

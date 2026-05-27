@@ -395,3 +395,28 @@ kaguya/
 - フォールバックチェーンを **AVX-512 BF16/VNNI → AVX2+FMA → Scalar** に変更（AMXはベアメタル環境向けに残す）
 
 **次フェーズ:** Phase 2: GGUFモデルローダー
+
+### Phase 2: GGUFモデルローダー — ✅ 完了 (2026-05-27)
+
+**成果物:**
+- GGUF v2/v3 パーサー (mmap + stream reader)
+- GgmlType全量子化タイプ対応 (Q4_0〜Q8_K, IQ系, TQ系, BF16)
+- GgufValue variant型メタデータ (int/float/string/array)
+- ModelLoader: GGUF → HyperParams + Weight参照
+- ModelWeights: 非所有ポインタベースのウェイト参照 (mmapデータへの直接参照)
+- アーキテクチャ検出 (llama/qwen2/mistral/mixtral/phi3/gemma/deepseek/command-r)
+- GQA対応HyperParams (num_kv_heads, n_rep, use_gqa)
+- MoEエキスパートウェイト対応
+- CLI --model-info フラグ
+- Google Test 23テスト全通過 (GGUF関連13テスト追加)
+- ビルド成功: 全ライブラリ + kaguya-cli + テスト + ベンチマーク
+
+**統合作業:**
+- kaguya-phase2/ ディレクトリの本格的GGUFローダー実装をメインプロジェクトに統合
+- kaguya/PLAN.md を唯一の正しい計画書として確定 (kaguya_plan.md は破棄)
+- DataType列挙をIQ/TQ系に拡張
+- ModelArch列挙にDEEPSEEK/COMMAND_Rを追加
+
+**PR:** https://github.com/Carvlly/kaguya/pull/2
+
+**次フェーズ:** Phase 3: 計算カーネル (AVX-512 BF16/VNNI GEMM)
