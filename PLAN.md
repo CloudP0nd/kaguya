@@ -243,8 +243,9 @@
 ```
 kaguya/
 ├── CMakeLists.txt
+├── AGENTS.md
 ├── PLAN.md
-├── README.md
+├── ROAD.md
 │
 ├── include/
 │   └── kaguya/
@@ -363,60 +364,15 @@ kaguya/
 
 ---
 
-## 9. 今すぐやること
+## 9. 開発状況
 
-1. ~~**CMake インストール** — 必須ビルドツール~~ ✅
-2. ~~**Google Test / Google Benchmark 導入** — CMakeのFetchContentで~~ ✅
-3. ~~**プロジェクトスキャフォールド作成** — ディレクトリ + CMakeLists.txt~~ ✅
-4. ~~**CPU Feature Detector 実装** — 最初の動くコード~~ ✅
-5. ~~**Hello World レベルのAMXテスト** — AMXが実際に動くことを確認~~ ✅ (AMXは仮想環境NG、AVX-512 BF16/VNNI動作確認済)
+開発の経緯・調査記録・重要な発見は **ROAD.md** に記録している。
 
----
-
-## 10. 開発状況
-
-### Phase 1: 基盤構築 — ✅ 完了 (2026-05-27)
-
-**成果物:**
-- プロジェクトスキャフォールド (CMake + ディレクトリ構造)
-- CPU Feature Detector (CPUID + XCR0 + キャッシュ + NUMA)
-- メモリマネージャ (Huge Pages + NUMAアウェア)
-- スレッドプール (work-stealing + CPU親和性ピン留め)
-- テンソル抽象 (DataType列挙 + 多次元テンソル)
-- モデル抽象 (HyperParams + LayerWeights)
-- サンプラー (Temperature/Top-K/Top-P/Min-P/Repetition)
-- CLI (`kaguya-cli --cpu-info`)
-- Google Test 10テスト全通過
-- ベンチマークスイート枠組み
-
-**重要な発見:**
-- **AMX命令はKVM仮想環境でSIGSEGV** — CPUIDはAMX対応を報告するが、実際のLDTILECFGがsegfault。CPUID Leaf 0x1Dの返り値も不正。ハイパーバイザがAMXを正しくパススルーしていない。
-- **AVX-512 BF16/VNNIは完全動作** — `_mm512_dpbf16_ps`, `_mm512_dpbusd_epi32` が正常に実行される。これがKaguyaの主戦力。
-- フォールバックチェーンを **AVX-512 BF16/VNNI → AVX2+FMA → Scalar** に変更（AMXはベアメタル環境向けに残す）
-
-**次フェーズ:** Phase 2: GGUFモデルローダー
-
-### Phase 2: GGUFモデルローダー — ✅ 完了 (2026-05-27)
-
-**成果物:**
-- GGUF v2/v3 パーサー (mmap + stream reader)
-- GgmlType全量子化タイプ対応 (Q4_0〜Q8_K, IQ系, TQ系, BF16)
-- GgufValue variant型メタデータ (int/float/string/array)
-- ModelLoader: GGUF → HyperParams + Weight参照
-- ModelWeights: 非所有ポインタベースのウェイト参照 (mmapデータへの直接参照)
-- アーキテクチャ検出 (llama/qwen2/mistral/mixtral/phi3/gemma/deepseek/command-r)
-- GQA対応HyperParams (num_kv_heads, n_rep, use_gqa)
-- MoEエキスパートウェイト対応
-- CLI --model-info フラグ
-- Google Test 23テスト全通過 (GGUF関連13テスト追加)
-- ビルド成功: 全ライブラリ + kaguya-cli + テスト + ベンチマーク
-
-**統合作業:**
-- kaguya-phase2/ ディレクトリの本格的GGUFローダー実装をメインプロジェクトに統合
-- kaguya/PLAN.md を唯一の正しい計画書として確定 (kaguya_plan.md は破棄)
-- DataType列挙をIQ/TQ系に拡張
-- ModelArch列挙にDEEPSEEK/COMMAND_Rを追加
-
-**PR:** https://github.com/Carvlly/kaguya/pull/2
-
-**次フェーズ:** Phase 3: 計算カーネル (AVX-512 BF16/VNNI GEMM)
+| フェーズ | 状態 |
+|----------|------|
+| Phase 1: 基盤構築 | ✅ 完了 |
+| Phase 2: GGUFモデルローダー | ✅ 完了 |
+| Phase 3: 計算カーネル | 🔜 次フェーズ |
+| Phase 4: 推論エンジン | 未着手 |
+| Phase 5: CLI・API・ベンチマーク | 未着手 |
+| Phase 6: 最適化・検証 | 未着手 |
