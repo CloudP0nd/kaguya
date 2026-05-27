@@ -1,0 +1,1 @@
+// Kaguya — loader: placeholder stub

@@ -1,0 +1,1 @@
+// Kaguya — rope: placeholder stub

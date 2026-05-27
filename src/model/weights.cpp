@@ -1,0 +1,1 @@
+// Kaguya — weights: placeholder stub

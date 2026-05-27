@@ -1,0 +1,1 @@
+// Kaguya — sampler: placeholder stub

@@ -1,0 +1,1 @@
+// Kaguya — engine: placeholder stub
