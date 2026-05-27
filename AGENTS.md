@@ -62,6 +62,8 @@ Kaguyaは **llama.cppを超えるCPU推論エンジン** である。
 | **AMXはKVMで動かない** | CPUIDはAMX対応を報告するが、`LDTILECFG`がSIGSEGV。CPUID Leaf 0x1Dの返り値も不正。ハイパーバイザがAMXを正しくパススルーしていない | KVM環境ではAMXカーネルをスキップ。ベアメタルでのみ有効化 |
 | **GCC 14は`tmm`レジスタを認識しない** | inline asmのclobber listに`tmm0`〜`tmm7`を書くとコンパイルエラー | clobberから`tmm`を削除。代わりに`"memory"`で全メモリclobberを指定 |
 | **AVX-512 BF16/VNNIは実動作確認済** | `_mm512_dpbf16_ps`, `_mm512_dpbusd_epi32` がKVM環境でも正常動作 | これが主戦力。安心して使える |
+| **KVMでFMA CPUIDビットが0になる** | CPUID Leaf 7 EBX[12]（FMA）がKVM環境で0を返す。しかしAVX-512が利用可能ならFMA/AVX2は必ず存在する | `cpu_features.cpp`でAVX-512検出時にFMA/AVX2を論理的に有効化する推論を追加済み |
+| **GCCに`_mm512_exp_ps`が存在しない** | AVX-512にはexp()のintrinsicが無い | `exp(x) = 2^(x/ln2)` + 6次Taylor展開で独自実装。~1e-7精度を確認済み |
 
 ### 3.2 フォールバックチェーン
 
@@ -145,8 +147,8 @@ cd build && ./kaguya_tests
 |----------|------|------|
 | Phase 1: 基盤構築 | ✅ 完了 | CPU検出・メモリ・スレッド・サンプラー・CLI |
 | Phase 2: GGUFモデルローダー | ✅ 完了 | GGUFパーサー・モデルローダー・アーキテクチャ検出 |
-| Phase 3: 計算カーネル | 🔜 次フェーズ | AVX-512 GEMM → 量子化カーネル → 特殊演算 |
-| Phase 4: 推論エンジン | 未着手 | |
+| Phase 3: 計算カーネル | ✅ 完了 | GEMM/特殊演算/量子化カーネル・ディスパッチャ |
+| Phase 4: 推論エンジン | 🔜 次フェーズ | KVキャッシュ・推論パイプライン・バッチ推論 |
 | Phase 5: CLI・API・ベンチマーク | 未着手 | |
 | Phase 6: 最適化・検証 | 未着手 | |
 

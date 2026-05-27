@@ -94,3 +94,51 @@ Phase 2のPR #2（upstream側）と、ローカルで進めていた実装との
 
 - https://github.com/Carvlly/kaguya/pull/2
 - https://github.com/Carvlly/kaguya/pull/3 (リファクタリング・AGENTS.md/ROAD.md追加)
+
+---
+
+## Phase 3: 計算カーネル — ✅ 完了 (2026-05-27)
+
+### 成果物
+
+- **GEMMカーネル群** (include/kaguya/kernels/gemm.h):
+  - FP32 Scalar GEMM: 64x64タイルキャッシュフレンドリー実装
+  - FP32 AVX2 GEMM: 4x8レジスタブロッキング + FMA
+  - FP32 AVX-512 GEMM: 4x16マイクロカーネル + `_mm512_fmadd_ps`
+  - BF16 AVX-512 GEMM: `_mm512_dpbf16_ps` による2-way BF16ドット積（主戦力）
+  - VNNI INT8 AVX-512 GEMM: `_mm512_dpbusd_epi32` による4x16バイト転置VNNIレイアウト
+  - AMX GEMM: スタブ（ベアメタル専用、KVMではSIGSEGV）
+- **特殊演算カーネル群** (include/kaguya/kernels/special_ops.h):
+  - Softmax: スカラ + AVX-512（6次Taylor展開exp近似、`_mm512_scalef_ps`併用）
+  - RMSNorm: スカラ + AVX-512（`_mm512_fmadd_ps`/`_mm512_reduce_add_ps`）
+  - LayerNorm: スカラ + AVX-512（分散計算のベクトル化）
+  - RoPE: スカラ + AVX-512（8ペア同時処理、`_mm512_mask_blend_ps`）
+  - SiLU: スカラ + AVX-512（ベクトル化sigmoid）
+  - GELU: スカラ + AVX-512（近似tanh、Newton-Raphson逆数精製）
+- **量子化カーネル群** (include/kaguya/kernels/quantize.h):
+  - Q4_0 デ量子化: 18バイト/block、ニブル展開
+  - Q8_0 デ量子化: 34バイト/block、int8スケール
+  - Q5_0 デ量子化: 22バイト/block、ggml互換qhビットレイアウト
+  - Q5_1 デ量子化: 24バイト/block、スケール+オフセット
+  - Q4_0/Q8_0 量子化: テスト用FP32→量子化
+  - 融合デ量子化+GEMM: Q4_0/Q8_0の行ごとのオンザフライデ量子化+行列積
+- **カーネルディスパッチャ**: `select_kernel_target()` + `gemm_dispatch()` 実装
+- Google Test 130テスト全通過 (GEMM 39 + 特殊演算 44 + 量子化 25 + 既存 22)
+
+### 重要な発見
+
+#### AVX-512 exp()近似の設計
+
+GCCには`_mm512_exp_ps`が存在しないため、`exp(x) = 2^(x/ln2)`アプローチと多項式近似を組み合わせた独自実装が必要だった。4次の`2^f`多項式近似（`f ∈ [-0.5, 0.5]`）では精度が不十分（~1e-3誤差）だったが、6次Taylor展開の`exp(f)`近似に切り替えたところ~1e-7精度を達成。この近似はSoftmax・SiLU・GELUの全AVX-512パスで利用している。
+
+#### KVM環境でのFMA検出問題
+
+CPUID Leaf 7 EBX[12]（FMA）がKVM環境で0を返す問題が発覚。AVX-512が利用可能な場合、FMA/AVX2/AVXも必ず利用可能であるという論理的推論を`cpu_features.cpp`の検出ロジックに追加した。これにより、AVX2カーネルのテストがSKIPPEDではなく正しくPASSするようになった。
+
+#### Q5_0/Q5_1のqhビットレイアウト
+
+Q5_0/Q5_1の5bit目を格納する`qh[4]`のビットレイアウトは、直感的な`qh[i/8] >> (i%8)`ではなく、ggml互換の`bit 2*i = element i, bit 2*i+1 = element i+16`というパッキング方式を採用していた。初期実装で誤ったレイアウトを使いテストが失敗したが、ggmlソースと照合して正しいレイアウトに修正した。
+
+### PR
+
+- https://github.com/Carvlly/kaguya/pull/4

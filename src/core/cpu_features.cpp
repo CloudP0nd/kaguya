@@ -394,6 +394,18 @@ CpuInfo CpuFeatureDetector::detect() {
         f.amx_tile = f.amx_int8 = f.amx_bf16 = false;
     }
 
+    // Logical deduction: if AVX-512 is available, FMA must also be available.
+    // All Intel CPUs that support AVX-512 also support FMA (since Haswell).
+    // KVM hypervisors sometimes fail to expose the FMA CPUID bit (leaf 7,
+    // subleaf 0, EBX[12]) even though the hardware supports it.
+    // If the OS supports AVX-512 (ZMM state), it must also support AVX/YMM.
+    if (f.avx512f && f.os_avx512) {
+        if (!f.fma) f.fma = true;
+        if (!f.avx2) f.avx2 = true;
+        if (!f.avx) f.avx = true;
+        if (!f.os_avx) f.os_avx = true;
+    }
+
     // ---- Topology ----
     detect_topology(info);
 
