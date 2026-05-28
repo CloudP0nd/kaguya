@@ -69,6 +69,7 @@ set(KAGUYA_SOURCES
     src/kernels/gemm_avx512.cpp
     src/kernels/gemm_avx2.cpp
     src/kernels/gemm_scalar.cpp
+    src/kernels/cache_tuner.cpp
     src/kernels/quantize.cpp
     src/kernels/softmax.cpp
     src/kernels/norm.cpp
@@ -81,6 +82,7 @@ set(KAGUYA_SOURCES
     src/inference/kv_cache.cpp
     src/inference/attention.cpp
     src/inference/batch.cpp
+    src/runtime/profiler.cpp
     src/sampling/sampler.cpp
     src/api/kaguya_c_api.cpp
 )
@@ -110,6 +112,8 @@ add_executable(kaguya_tests
     tests/unit/test_attention.cpp
     tests/unit/test_special_ops.cpp
     tests/unit/test_c_api.cpp
+    tests/unit/test_accuracy.cpp
+    tests/unit/test_stability.cpp
     tests/integration/test_inference.cpp
 )
 target_link_libraries(kaguya_tests PRIVATE kaguya GTest::gtest_main)

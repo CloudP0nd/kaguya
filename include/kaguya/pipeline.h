@@ -31,6 +31,7 @@ public:
     void prefill(const std::vector<int32_t>& tokens);
 
     /// Generate one token using the given sampler
+    /// Returns -1 if context is full (pos >= context_length)
     int32_t decode(Sampler& sampler);
 
     /// Convenience: generate n_predict tokens from a prompt
@@ -44,6 +45,9 @@ public:
 
     /// Get the logits from the last forward pass
     const std::vector<float>& logits() const { return logits_; }
+
+    /// Check if the context window is full
+    bool is_context_full() const { return pos_ >= model_.hparams().context_length; }
 
 private:
     /// Forward pass for a single token at given position
@@ -77,6 +81,8 @@ private:
     std::vector<float> att_scores_;    // [n_heads, max_seq_len]
     std::vector<float> hb_;            // [ffn_dim] — gate
     std::vector<float> hb2_;           // [ffn_dim] — up
+    std::vector<float> attn_proj_;     // [emb_dim] — attention output projection
+    std::vector<float> ffn_down_;      // [emb_dim] — FFN down projection
     std::vector<float> weight_buf_;    // scratch for dequantized weights
     std::vector<int32_t> recent_tokens_; // for repetition penalty
 };

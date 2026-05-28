@@ -12,20 +12,24 @@
 namespace kaguya::kernels {
 
 // ============================================================================
-// Helper: cast __m512i to __m512bh (GCC 14 doesn't have _mm512_castsi512_bh)
+// Helper: BF16 → FP32 conversion (always available for fallback path)
 // ============================================================================
-#if defined(__AVX512BF16__)
-static inline __m512bh si512_to_bh(__m512i v) {
-    __m512bh result;
-    std::memcpy(&result, &v, sizeof(__m512bh));
-    return result;
-}
 
 /// Convert BF16 (stored as uint16_t) to FP32
 static inline float bf16_to_f32(uint16_t bf16_val) {
     uint32_t bits = static_cast<uint32_t>(bf16_val) << 16;
     float result;
     std::memcpy(&result, &bits, sizeof(float));
+    return result;
+}
+
+// ============================================================================
+// Helper: cast __m512i to __m512bh (GCC 14 doesn't have _mm512_castsi512_bh)
+// ============================================================================
+#if defined(__AVX512BF16__)
+static inline __m512bh si512_to_bh(__m512i v) {
+    __m512bh result;
+    std::memcpy(&result, &v, sizeof(__m512bh));
     return result;
 }
 
@@ -108,6 +112,17 @@ static void gemm_avx512_fp32_kernel(const GemmParams& params) {
                 const float a2 = (mr > 2) ? A[(ii + 2) * lda + k] : 0.0f;
                 const float a3 = (mr > 3) ? A[(ii + 3) * lda + k] : 0.0f;
 
+                // Software prefetch: hint next iteration's data into L1
+#if defined(__AVX512F__)
+                if (k + 1 < K) {
+                    _mm_prefetch((const char*)&B[(k + 1) * ldb + jj], _MM_HINT_T0);
+                    if (mr > 0) _mm_prefetch((const char*)&A[(ii + 0) * lda + k + 1], _MM_HINT_T0);
+                    if (mr > 1) _mm_prefetch((const char*)&A[(ii + 1) * lda + k + 1], _MM_HINT_T0);
+                    if (mr > 2) _mm_prefetch((const char*)&A[(ii + 2) * lda + k + 1], _MM_HINT_T0);
+                    if (mr > 3) _mm_prefetch((const char*)&A[(ii + 3) * lda + k + 1], _MM_HINT_T0);
+                }
+#endif
+
                 __m512 bv;
                 if (nr == NR) {
                     bv = _mm512_loadu_ps(&B[k * ldb + jj]);
@@ -149,6 +164,8 @@ static void gemm_avx512_fp32_kernel(const GemmParams& params) {
 #endif // __AVX512F__
 
 void gemm_avx512(const GemmParams& params) {
+    if (!validate_gemm_params(params)) return;
+
 #if defined(__AVX512F__)
     const auto& info = kaguya::CpuFeatureDetector::get();
     if (info.flags.avx512f && info.flags.os_avx512) {

@@ -6,9 +6,13 @@
 /// Layout: [n_layers, n_kv_heads, max_seq_len, head_dim]
 /// This layout ensures that for a given (layer, kv_head), all positions
 /// are contiguous in memory, enabling efficient GEMM for attention.
+///
+/// Phase 6: Uses MemoryManager with HugePages + Aligned64 for
+/// NUMA-aware allocation instead of std::vector<float>.
 
 #include <cstdint>
 #include <vector>
+#include <stdexcept>
 #include "kaguya/memory_manager.h"
 
 namespace kaguya {
@@ -23,13 +27,13 @@ public:
     /// @param max_seq_len Maximum sequence length (context window)
     KVCache(int64_t n_layers, int64_t n_kv_heads, int64_t head_dim, int64_t max_seq_len);
 
-    ~KVCache() = default;
+    ~KVCache();
 
     // Non-copyable, movable
     KVCache(const KVCache&) = delete;
     KVCache& operator=(const KVCache&) = delete;
-    KVCache(KVCache&&) noexcept = default;
-    KVCache& operator=(KVCache&&) noexcept = default;
+    KVCache(KVCache&& other) noexcept;
+    KVCache& operator=(KVCache&& other) noexcept;
 
     // --- Per-position access (for storing new K/V during inference) ---
 
@@ -69,12 +73,13 @@ public:
     int64_t head_dim() const { return head_dim_; }
     int64_t max_seq_len() const { return max_seq_len_; }
     int64_t kv_dim() const { return n_kv_heads_ * head_dim_; }
+    int64_t head_stride() const { return head_stride_; }
 
     /// Total elements per layer's key or value cache
     int64_t layer_elements() const { return n_kv_heads_ * max_seq_len_ * head_dim_; }
 
     /// Total allocated size in bytes (for one of key or value)
-    size_t allocated_bytes() const { return key_buf_.size() * sizeof(float); }
+    size_t allocated_bytes() const { return key_buf_size_; }
 
 private:
     int64_t n_layers_;
@@ -89,9 +94,16 @@ private:
     int64_t pos_stride_;     // head_dim
 
     // Key cache: [n_layers, n_kv_heads, max_seq_len, head_dim]
-    std::vector<float> key_buf_;
+    float* key_buf_ = nullptr;
+    size_t key_buf_size_ = 0;  // in bytes
+
     // Value cache: [n_layers, n_kv_heads, max_seq_len, head_dim]
-    std::vector<float> value_buf_;
+    float* value_buf_ = nullptr;
+    size_t value_buf_size_ = 0;  // in bytes
+
+    // Track allocation method for proper deallocation
+    bool key_uses_memory_manager_ = false;
+    bool value_uses_memory_manager_ = false;
 };
 
 } // namespace kaguya

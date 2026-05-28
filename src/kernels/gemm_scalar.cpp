@@ -1,14 +1,40 @@
 #include "kaguya/kernels/gemm.h"
+#include "kaguya/kernels/cache_tuner.h"
 
 #include <cstring>
 #include <algorithm>
 
 namespace kaguya::kernels {
 
+bool validate_gemm_params(const GemmParams& params) {
+    const int64_t M = params.M;
+    const int64_t N = params.N;
+    const int64_t K = params.K;
+
+    // Zero dimensions are valid — just skip computation
+    if (M == 0 || N == 0 || K == 0) {
+        return false;
+    }
+
+    // Negative dimensions are invalid
+    if (M < 0 || N < 0 || K < 0) {
+        return false;
+    }
+
+    // Non-zero dimensions require non-null pointers
+    if (params.A == nullptr || params.B == nullptr || params.C == nullptr) {
+        return false;
+    }
+
+    return true;
+}
+
 /// Scalar FP32 GEMM with cache-friendly 64x64 micro-tiling.
 /// Reference implementation for correctness testing.
 /// C[M,N] = alpha * A[M,K] * B[K,N] + beta * C[M,N]
 void gemm_scalar(const GemmParams& params) {
+    if (!validate_gemm_params(params)) return;
+
     const int64_t M = params.M;
     const int64_t N = params.N;
     const int64_t K = params.K;
@@ -37,8 +63,8 @@ void gemm_scalar(const GemmParams& params) {
         return;
     }
 
-    // Cache-friendly tiled GEMM with 64x64 micro-tiles
-    constexpr int64_t TILE = 64;
+    // Cache-friendly tiled GEMM with cache-aware micro-tiles
+    const int64_t TILE = CacheTuner::get().get_tile_size();
 
     for (int64_t ii = 0; ii < M; ii += TILE) {
         const int64_t i_end = std::min(ii + TILE, M);

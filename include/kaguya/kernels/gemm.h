@@ -64,6 +64,16 @@ struct GemmParamsVNNI {
 };
 
 // ============================================================================
+// GEMM parameter validation
+// ============================================================================
+
+/// Validate GEMM parameters before computation.
+/// Returns true if parameters are valid, false if computation should be skipped
+/// (e.g., zero dimensions are valid but require no work).
+/// Returns false for: negative dimensions, null pointers when dimensions are non-zero.
+bool validate_gemm_params(const GemmParams& params);
+
+// ============================================================================
 // FP32 GEMM kernels
 // ============================================================================
 

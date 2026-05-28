@@ -9,7 +9,6 @@ namespace kaguya {
 
 void compute_attention(const AttentionParams& params) {
     const int64_t n_heads = params.n_heads;
-    const int64_t n_kv_heads = params.n_kv_heads;
     const int64_t head_dim = params.head_dim;
     const int64_t seq_len = params.seq_len;
     const int64_t n_rep = params.n_rep;
@@ -18,8 +17,8 @@ void compute_attention(const AttentionParams& params) {
         const int64_t kv_h = h / n_rep; // GQA: map query head to KV head
 
         const float* q_h = params.q + h * head_dim;         // [head_dim]
-        const float* k_h = params.k_cache + kv_h * seq_len * head_dim; // [seq_len, head_dim]
-        const float* v_h = params.v_cache + kv_h * seq_len * head_dim; // [seq_len, head_dim]
+        const float* k_h = params.k_cache + kv_h * params.kv_stride; // [max_seq_len, head_dim] — only first seq_len rows are valid
+        const float* v_h = params.v_cache + kv_h * params.kv_stride; // [max_seq_len, head_dim] — only first seq_len rows are valid
         float* scores_h = params.scores + h * seq_len;       // [seq_len]
         float* out_h = params.out + h * head_dim;            // [head_dim]
 
