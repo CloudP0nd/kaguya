@@ -106,6 +106,7 @@ add_executable(kaguya_tests
     tests/unit/test_gemm.cpp
     tests/unit/test_quantize.cpp
     tests/unit/test_kv_cache.cpp
+    tests/unit/test_special_ops.cpp
     tests/integration/test_inference.cpp
 )
 target_link_libraries(kaguya_tests PRIVATE kaguya GTest::gtest_main)
