@@ -172,6 +172,22 @@ void dequantize_q5_1(const void* data, float* out, int64_t n_blocks) {
     }
 }
 
+void dequantize_bf16(const void* data, float* out, int64_t n_elements) {
+    const auto* src = static_cast<const uint16_t*>(data);
+    for (int64_t i = 0; i < n_elements; ++i) {
+        // BF16 → FP32: just shift left by 16 bits
+        uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        std::memcpy(&out[i], &bits, sizeof(float));
+    }
+}
+
+void dequantize_f16(const void* data, float* out, int64_t n_elements) {
+    const auto* src = static_cast<const uint16_t*>(data);
+    for (int64_t i = 0; i < n_elements; ++i) {
+        out[i] = fp16_to_fp32(src[i]);
+    }
+}
+
 void dequantize_dispatch(DataType dtype, const void* data, float* out, int64_t n_elements) {
     const int bs = data_type_block_size(dtype);
     const int64_t n_blocks = (n_elements + bs - 1) / bs;
@@ -188,6 +204,12 @@ void dequantize_dispatch(DataType dtype, const void* data, float* out, int64_t n
             break;
         case DataType::Q5_1:
             dequantize_q5_1(data, out, n_blocks);
+            break;
+        case DataType::BF16:
+            dequantize_bf16(data, out, n_elements);
+            break;
+        case DataType::F16:
+            dequantize_f16(data, out, n_elements);
             break;
         case DataType::F32:
             // No conversion needed

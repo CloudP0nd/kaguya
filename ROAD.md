@@ -142,3 +142,63 @@ Q5_0/Q5_1の5bit目を格納する`qh[4]`のビットレイアウトは、直感
 ### PR
 
 - https://github.com/Carvlly/kaguya/pull/4
+
+---
+
+## Phase 4: 推論エンジン — ✅ 完了 (2026-05-28)
+
+### 成果物
+
+- **KV-Cache Manager** (include/kaguya/kv_cache.h):
+  - レイアウト: [n_layers, n_kv_heads, max_seq_len, head_dim] — GQA対応
+  - key_head/value_headアクセサでGEMMに最適な[seq_len, head_dim]連続ブロックを取得可能
+  - advance/resetによるポジション管理
+  - ムーブセマンティクス対応
+- **Attention** (include/kaguya/attention.h):
+  - compute_attention() — GQA対応マルチヘッドアテンション
+  - Q*K^Tスコア計算 → softmax → 加重和 をGEMMディスパッチャで実行
+  - 1/sqrt(d)スケーリング適用済み
+- **Pipeline** (include/kaguya/pipeline.h):
+  - Transformer推論フルパイプライン: 埋め込み → レイヤー処理 → 出力正規化 → ロジット → サンプリング
+  - prefill()/decode()/generate() API
+  - 量子化ウェイトのオンザフライデ量子化（dequantize_weight + weighted_project）
+  - GEMV定式化: y = W * x^T（Wを行優先[ne1, ne0]として直接使用、転置不要）
+- **Batch Inference** (include/kaguya/batch.h):
+  - BatchInferenceクラス — 複数シーケンスのラウンドロビン処理
+  - add_sequence()/step()/run_all() API
+- **ModelWeights拡張**:
+  - LayerWeights/ModelWeightsにDataTypeフィールド追加（wq_dtype等）
+  - model_loaderがGgmlType→DataType変換を自動設定
+- **量子化カーネル拡張**:
+  - BF16デ量子化 (dequantize_bf16) — 左16ビットシフトでFP32変換
+  - F16デ量子化 (dequantize_f16) — 既存fp16_to_fp32関数を利用
+  - dequantize_dispatchがBF16/F16に対応
+- **CLI推論ループ**:
+  - kaguya-cliにPipeline統合、サンプリングパラメータ設定、生成速度表示
+- Google Test 156テスト全通過 (KV Cache 13 + Attention 4 + Inference 11 + 既存 128)
+
+### 重要な発見
+
+#### GEMV定式化: y = W * x^T
+
+Transformer推論の線形レイヤーは通常 y = x @ W^T と定式化されるが、GGUFのウェイトは行優先[ne1, ne0]で格納されている。GEMM C = A * B のBにW^Tが必要になり転置コストが発生する。しかし、M=1（デコード）の場合、y^T = W @ x^T と変形することで、WをそのままA[M=ne1, K=ne0]として使える。これにより転置不要でGEMVを実行可能。
+
+具体例: wq [ne0=emb_dim, ne1=n_heads*head_dim]の場合:
+- GEMV: M=n_heads*head_dim, K=emb_dim, N=1
+- A=wq (lda=emb_dim), B=x (ldb=1), C=y (ldc=1)
+
+#### KVキャッシュレイアウトの設計
+
+KVキャッシュのレイアウト設計には読み書きのトレードオフがある:
+- [max_seq_len, n_kv_heads, head_dim]: 書き込み効率良好（1回のmemcpy）
+- [n_kv_heads, max_seq_len, head_dim]: 読み込み効率良好（GEMMに適した連続ブロック）
+
+アテンション計算（読み込み）が性能クリティカルパスであるため、後者を採用。書き込み時はn_kv_heads回の小さなmemcpyが必要だが、これは1トークン生成につき1回のみ。
+
+#### アテンション計算のデータコピー問題
+
+現在の実装では、KVキャッシュからGEMM用の[n_kv_heads, seq_len, head_dim]一時バッファにデータをコピーしている。これはmax_seq_lenのストライド差によるもの。Phase 6でキャッシュレイアウトの最適化またはストライド付きGEMMカーネルの実装により解消予定。
+
+### PR
+
+- (次回のPRでupstreamに提出予定)

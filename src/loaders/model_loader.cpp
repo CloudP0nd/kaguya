@@ -211,12 +211,14 @@ bool ModelLoader::build_weight_refs() {
         weights_.tok_emb_bytes = ggml_nbytes(*p);
         weights_.tok_emb_ne0 = (p->n_dims > 0) ? p->dims[0] : 0;
         weights_.tok_emb_ne1 = (p->n_dims > 1) ? p->dims[1] : 1;
+        weights_.tok_emb_dtype = ggml_to_data_type(p->type);
     }
 
     // Output norm
     if (auto* p = find_tensor({"output_norm.weight", "model.norm.weight"})) {
         weights_.output_norm = gguf_->tensor_data(*p);
         weights_.output_norm_bytes = ggml_nbytes(*p);
+        weights_.output_norm_dtype = ggml_to_data_type(p->type);
     }
 
     // Output projection (may share with tok_emb for tied weights)
@@ -225,6 +227,7 @@ bool ModelLoader::build_weight_refs() {
         weights_.output_proj_bytes = ggml_nbytes(*p);
         weights_.output_proj_ne0 = (p->n_dims > 0) ? p->dims[0] : 0;
         weights_.output_proj_ne1 = (p->n_dims > 1) ? p->dims[1] : 1;
+        weights_.output_proj_dtype = ggml_to_data_type(p->type);
     }
 
     // --- Per-layer weights ---
@@ -252,55 +255,60 @@ bool ModelLoader::build_weight_refs() {
 
         auto set_weight = [&](const void*& ptr, size_t& bytes,
                                int64_t& ne0, int64_t& ne1,
-                               const std::vector<std::string>& suffixes) {
+                               const std::vector<std::string>& suffixes,
+                               DataType& dtype) {
             if (auto* ti = find_layer_tensor(suffixes)) {
                 ptr = gguf_->tensor_data(*ti);
                 bytes = ggml_nbytes(*ti);
                 ne0 = (ti->n_dims > 0) ? static_cast<int64_t>(ti->dims[0]) : 0;
                 ne1 = (ti->n_dims > 1) ? static_cast<int64_t>(ti->dims[1]) : 1;
+                dtype = ggml_to_data_type(ti->type);
             }
         };
 
-        // Attention norm (no shape tracking needed)
+        // Attention norm
         {
             int64_t dummy_ne0 = 0, dummy_ne1 = 0;
             set_weight(lw.attn_norm, lw.attn_norm_bytes,
                         dummy_ne0, dummy_ne1,
-                        {"attn_norm.weight", "input_layernorm.weight"});
+                        {"attn_norm.weight", "input_layernorm.weight"},
+                        lw.attn_norm_dtype);
         }
 
         // Q, K, V projections
         set_weight(lw.wq, lw.wq_bytes, lw.wq_ne0, lw.wq_ne1,
-                   {"attn_q.weight", "self_attn.q_proj.weight"});
+                   {"attn_q.weight", "self_attn.q_proj.weight"}, lw.wq_dtype);
         set_weight(lw.wk, lw.wk_bytes, lw.wk_ne0, lw.wk_ne1,
-                   {"attn_k.weight", "self_attn.k_proj.weight"});
+                   {"attn_k.weight", "self_attn.k_proj.weight"}, lw.wk_dtype);
         set_weight(lw.wv, lw.wv_bytes, lw.wv_ne0, lw.wv_ne1,
-                   {"attn_v.weight", "self_attn.v_proj.weight"});
+                   {"attn_v.weight", "self_attn.v_proj.weight"}, lw.wv_dtype);
         set_weight(lw.wo, lw.wo_bytes, lw.wo_ne0, lw.wo_ne1,
-                   {"attn_output.weight", "self_attn.o_proj.weight"});
+                   {"attn_output.weight", "self_attn.o_proj.weight"}, lw.wo_dtype);
 
-        // FFN norm (no shape tracking needed)
+        // FFN norm
         {
             int64_t dummy_ne0 = 0, dummy_ne1 = 0;
             set_weight(lw.ffn_norm, lw.ffn_norm_bytes,
                         dummy_ne0, dummy_ne1,
-                        {"ffn_norm.weight", "post_attention_layernorm.weight"});
+                        {"ffn_norm.weight", "post_attention_layernorm.weight"},
+                        lw.ffn_norm_dtype);
         }
 
         // FFN gate, up, down
         set_weight(lw.w_gate, lw.w_gate_bytes, lw.w_gate_ne0, lw.w_gate_ne1,
-                   {"ffn_gate.weight", "mlp.gate_proj.weight"});
+                   {"ffn_gate.weight", "mlp.gate_proj.weight"}, lw.w_gate_dtype);
         set_weight(lw.w_up, lw.w_up_bytes, lw.w_up_ne0, lw.w_up_ne1,
-                   {"ffn_up.weight", "mlp.up_proj.weight"});
+                   {"ffn_up.weight", "mlp.up_proj.weight"}, lw.w_up_dtype);
         set_weight(lw.w_down, lw.w_down_bytes, lw.w_down_ne0, lw.w_down_ne1,
-                   {"ffn_down.weight", "mlp.down_proj.weight"});
+                   {"ffn_down.weight", "mlp.down_proj.weight"}, lw.w_down_dtype);
 
         // MoE gate (router)
         if (hp.num_experts > 0) {
             {
                 int64_t dummy_ne0 = 0, dummy_ne1 = 0;
                 set_weight(lw.moe_gate, lw.moe_gate_bytes, dummy_ne0, dummy_ne1,
-                           {"ffn_gate_exps.weight", "block_sparse_moe.gate.weight"});
+                           {"ffn_gate_exps.weight", "block_sparse_moe.gate.weight"},
+                           lw.w_gate_dtype); // reuse w_gate_dtype for moe_gate
             }
 
             // Expert weights
