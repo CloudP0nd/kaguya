@@ -39,6 +39,12 @@ void dequantize_q5_0(const void* data, float* out, int64_t n_blocks);
 /// block: 24 bytes = {float16 d, float16 m, uint8_t qh[4], uint8_t qs[16]} → 32 FP32 values
 void dequantize_q5_1(const void* data, float* out, int64_t n_blocks);
 
+/// Dequantize BF16 data to FP32
+void dequantize_bf16(const void* data, float* out, int64_t n_elements);
+
+/// Dequantize F16 data to FP32
+void dequantize_f16(const void* data, float* out, int64_t n_elements);
+
 /// Generic dequantize dispatch based on DataType
 void dequantize_dispatch(DataType dtype, const void* data, float* out, int64_t n_elements);
 

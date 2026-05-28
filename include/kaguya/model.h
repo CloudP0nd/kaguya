@@ -62,17 +62,17 @@ struct HyperParams {
 /// A single transformer layer's weight references
 struct LayerWeights {
     // Attention
-    const void* attn_norm     = nullptr; size_t attn_norm_bytes = 0;
-    const void* wq            = nullptr; size_t wq_bytes = 0;
-    const void* wk            = nullptr; size_t wk_bytes = 0;
-    const void* wv            = nullptr; size_t wv_bytes = 0;
-    const void* wo            = nullptr; size_t wo_bytes = 0;
+    const void* attn_norm     = nullptr; size_t attn_norm_bytes = 0; DataType attn_norm_dtype = DataType::F32;
+    const void* wq            = nullptr; size_t wq_bytes = 0;       DataType wq_dtype = DataType::F32;
+    const void* wk            = nullptr; size_t wk_bytes = 0;       DataType wk_dtype = DataType::F32;
+    const void* wv            = nullptr; size_t wv_bytes = 0;       DataType wv_dtype = DataType::F32;
+    const void* wo            = nullptr; size_t wo_bytes = 0;       DataType wo_dtype = DataType::F32;
 
     // FFN
-    const void* ffn_norm      = nullptr; size_t ffn_norm_bytes = 0;
-    const void* w_gate        = nullptr; size_t w_gate_bytes = 0;
-    const void* w_up          = nullptr; size_t w_up_bytes = 0;
-    const void* w_down        = nullptr; size_t w_down_bytes = 0;
+    const void* ffn_norm      = nullptr; size_t ffn_norm_bytes = 0; DataType ffn_norm_dtype = DataType::F32;
+    const void* w_gate        = nullptr; size_t w_gate_bytes = 0;    DataType w_gate_dtype = DataType::F32;
+    const void* w_up          = nullptr; size_t w_up_bytes = 0;      DataType w_up_dtype = DataType::F32;
+    const void* w_down        = nullptr; size_t w_down_bytes = 0;    DataType w_down_dtype = DataType::F32;
 
     // MoE specific
     const void* moe_gate      = nullptr; size_t moe_gate_bytes = 0;
@@ -93,9 +93,9 @@ struct LayerWeights {
 /// All model weights (non-owning pointers into GGUF tensor data)
 struct ModelWeights {
     // Global
-    const void* tok_emb       = nullptr; size_t tok_emb_bytes = 0;
-    const void* output_norm   = nullptr; size_t output_norm_bytes = 0;
-    const void* output_proj   = nullptr; size_t output_proj_bytes = 0;
+    const void* tok_emb       = nullptr; size_t tok_emb_bytes = 0;       DataType tok_emb_dtype = DataType::F32;
+    const void* output_norm   = nullptr; size_t output_norm_bytes = 0;   DataType output_norm_dtype = DataType::F32;
+    const void* output_proj   = nullptr; size_t output_proj_bytes = 0;   DataType output_proj_dtype = DataType::F32;
 
     int64_t tok_emb_ne0 = 0, tok_emb_ne1 = 0;
     int64_t output_proj_ne0 = 0, output_proj_ne1 = 0;
