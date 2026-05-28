@@ -62,6 +62,8 @@ namespace kaguya::kernels {
 ///   3. AVX2   → gemm_avx2() with 4x8 micro-kernel (FMA or non-FMA)
 ///   4. Scalar → gemm_scalar() with 64x64 cache-friendly tiling
 void gemm_dispatch(const GemmParams& params) {
+    if (!validate_gemm_params(params)) return;
+
     const auto target = kaguya::select_kernel_target();
 
     switch (target) {

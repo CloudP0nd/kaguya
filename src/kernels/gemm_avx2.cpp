@@ -227,6 +227,8 @@ static void gemm_avx2_nofma_kernel(const GemmParams& params) {
 #endif // __AVX2__
 
 void gemm_avx2(const GemmParams& params) {
+    if (!validate_gemm_params(params)) return;
+
     const auto& info = kaguya::CpuFeatureDetector::get();
 
 #if defined(__AVX2__) && defined(__FMA__)

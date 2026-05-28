@@ -262,4 +262,91 @@ CLIの`--bench`モードはユーザーが手軽にtok/sを測定するための
 
 ### PR
 
+- https://github.com/Carvlly/kaguya/pull/6
+
+---
+
+## Phase 6: 最適化・検証 — ✅ 完了 (2026-05-28)
+
+### 成果物
+
+- **ストライド対応アテンション** (include/kaguya/attention.h):
+  - `AttentionParams`に`kv_stride`フィールド追加 — KVキャッシュのヘッド間ストライドを直接指定可能に
+  - `compute_attention()`がストライド付きKVキャッシュに直接アクセス — データコピー完全排除
+  - 従来の`kv_h * seq_len * head_dim`オフセット計算を`kv_h * kv_stride`に変更
+- **パイプライン最適化** (include/kaguya/pipeline.h, src/inference/pipeline.cpp):
+  - KVキャッシュデータコピー完全排除 — `k_attn`/`v_attn`一時バッファのアロケーション・コピーを削除
+  - `attn_proj_`/`ffn_down_`メンバーバッファの事前確保 — レイヤーごとの`std::vector`アロケーションを排除
+  - `kv_cache_.head_stride()`アクセサでストライド情報を直接取得
+- **キャッシュアウェアGEMMタイルチューニング** (include/kaguya/kernels/cache_tuner.h):
+  - `CacheTuner`クラス — CPU検出結果からL2キャッシュサイズを取得
+  - `get_tile_size()` — sqrt(L2_size / (3 * sizeof(float))) に基づく最適タイルサイズ計算
+  - クランプ範囲 [16, 512] — 極端な値を防止
+  - スカラGEMMでハードコード`TILE=64`を`CacheTuner::get().get_tile_size()`に置換
+- **ソフトウェアプリフェッチ** (src/kernels/gemm_avx512.cpp):
+  - AVX-512 FP32 GEMMのKループ内に`_mm_prefetch`ヒント挿入
+  - 次のB行と次のA要素をL1キャッシュに事前ロード (`_MM_HINT_T0`)
+  - `#if defined(__AVX512F__)`ガード付き
+- **メモリ帯域プロファイラ** (include/kaguya/profiler.h):
+  - `MemoryBandwidthProfiler` — シーケンシャルread/write/copy帯域測定 (GB/s)
+  - `InferenceProfiler` — レイヤー/アテンション/FFN単位のタイミング計測 + サマリー出力
+  - `compute_perplexity()` — トークン列のパープレキシティ計算
+- **NUMAアウェアKVキャッシュ** (include/kaguya/kv_cache.h):
+  - `std::vector<float>`から`MemoryManager::allocate()`に移行 — Huge Pages対応
+  - 2MB以上のバッファには`MemFlags::HugePages | MemFlags::Aligned64`を自動使用
+  - 2MB未満は`MemFlags::Aligned64`のみ — ヒューリスティック不一致を防止
+  - カスタムデストラクタ + ムーブセマンティクス対応
+  - `head_stride()`パブリックアクセサ追加
+- **精度検証テスト** (tests/unit/test_accuracy.cpp): 10テスト追加
+  - Q4_0/Q8_0/Q5_0/Q5_1デ量子化誤差限界テスト
+  - BF16ラウンドトリップ精度テスト
+  - Softmax正規化検証 (和=1.0)
+  - RMSNormスケール保存検証
+  - GEMM精度テスト (dispatch vs scalar, 誤差 < 1e-4)
+  - Attention/Pipeline出力のNaN/Inf検証
+- **安定性テスト** (tests/unit/test_stability.cpp): 20テスト追加
+  - GEMM: ゼロ次元・1要素・大K・alpha/beta指定
+  - Softmax/RMSNorm/LayerNorm: 1要素・2要素・ゼロ入力
+  - RoPE: position=0
+  - KVキャッシュ: 1ポジション・最大ポジション・リセット再利用・ムーブセマンティクス
+  - Pipeline: 空プロンプト・1トークン・複数リセット
+  - Sampler: 全負ロジット・全等ロジット
+  - デ量子化: n_blocks=0
+- **エラーハンドリング強化**:
+  - `KVCache`コンストラクタ: 不正次元で`std::invalid_argument`、オーバーフローで`std::length_error`
+  - `Pipeline`: 空プロンプト安全処理、コンテキスト長超過時の`decode()`で-1返却、`is_context_full()`追加
+  - `validate_gemm_params()`: NULLポインタ・負次元の検証、全GEMMエントリポイントに挿入
+- Google Test 213テスト全通過 (Accuracy 10 + Stability 20 + 既存 183)
+- ASan (-fsanitize=address,undefined) ビルドで213テスト全通過 — メモリリークなし
+
+### 重要な発見
+
+#### ストライド対応アテンションによるデータコピー排除
+
+Phase 4で指摘されていた「アテンション計算のデータコピー問題」を解消。KVキャッシュのレイアウト [n_kv_heads, max_seq_len, head_dim] において、ヘッド間ストライドは`max_seq_len * head_dim`だが、`compute_attention()`は`seq_len * head_dim`を想定していた。この不一致を`kv_stride`パラメータで解決し、KVキャッシュデータを直接参照可能にした。
+
+効果: レイヤー1回あたり `2 * n_kv_heads * seq_len * head_dim * sizeof(float)` バイトのコピーが削減。典型的な7Bモデル (n_kv_heads=32, seq_len=2048, head_dim=128) では約64MB/レイヤーのコピーが不要に。
+
+#### bf16_to_f32のプリプロセッサガード問題
+
+`bf16_to_f32()`関数が`#if defined(__AVX512BF16__)`ガード内に定義されていたが、BF16 GEMMのフォールバックパス（スカラGEMM）でも必要であることが判明。ASanビルドでAVX-512 BF16が無効な場合にリンクエラーが発生。関数をガードの外に移動して解決した。
+
+#### MemoryManager::deallocateのサイズヒューリスティック
+
+`MemoryManager::deallocate()`は内部でバッファサイズが2MB以上の場合にHuge Pagesと判定してmunmapを呼ぶが、KVキャッシュの小さなバッファ（テスト用など）で`MemFlags::HugePages`を指定すると、allocateとdeallocateのヒューリスティックが不一致を起こす。解決策として、2MB未満のバッファには`MemFlags::Aligned64`のみを使用するようにした。
+
+#### CacheTunerのL2キャッシュベース最適タイルサイズ
+
+L2キャッシュに3つのタイルパネル（A, B, C）が収まるよう、`tile_size = sqrt(L2_size / (3 * sizeof(float)))`で計算。テスト環境のL2キャッシュが1024KBの場合、最適タイルサイズは約169（→172に丸め）。ハードコードの64より大きく、より大きなキャッシュ利用率を実現。
+
+### トラブルシューティング
+
+| 問題 | 原因 | 解決策 |
+|------|------|--------|
+| bf16_to_f32のリンクエラー | `#if defined(__AVX512BF16__)`ガード内に定義 | ガードの外に移動 |
+| KVキャッシュHuge Pages不整合 | 2MB未満でHugePages指定 + deallocateのヒューリスティック | 2MB未満はAligned64のみ使用 |
+| Pipeline::decodeのコンテキスト超過 | pos >= context_lengthでの未定義動作 | -1返却 + `is_context_full()`追加 |
+
+### PR
+
 - (次回のPRでupstreamに提出予定)

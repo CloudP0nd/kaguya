@@ -84,7 +84,14 @@ AMX (ベアメタル専用)
 | **numa.hが無い環境がある** | `<numa.h>`がインストールされていないとコンパイルエラー | `#ifdef KAGUYA_NUMA` でガード。CMakeで`find_path`して定義 |
 | **`std::greater`のテンプレート引数** | `priority_queue`の比較に`std::greater<>{}`だと型推論が失敗 | `std::greater<ElementType>{}` のように明示的に型を指定 |
 
-### 3.4 Git・GitHub関連
+### 3.4 メモリ管理関連
+
+| 罠 | 詳細 | 対策 |
+|---|---|---|
+| **MemoryManager::deallocateのサイズヒューリスティック** | `MemoryManager::deallocate()`は2MB以上をHuge Pagesと判定するが、小さなKVキャッシュ（< 2MB）ではHuge Pagesフラグを立てないこと。そうしないとdeallocateのヒューリスティックとallocateのフラグが不一致になり二重freeやfreeの失敗が起きる | KVキャッシュ等でMemoryManagerを使う場合、2MB未満のバッファには`MemFlags::Aligned64`のみを使用する |
+| **bf16_to_f32のプリプロセッサガード外配置** | `bf16_to_f32()`が`#if defined(__AVX512BF16__)`内に定義されていたが、BF16フォールバックコードパス（スカラGEMM）でも必要。コンパイル時にAVX-512 BF16が無効だとリンクエラーになる | `bf16_to_f32()`をプリプロセッサガードの外に移動する |
+
+### 3.5 Git・GitHub関連
 
 | 罠 | 詳細 | 対策 |
 |---|---|---|
@@ -150,7 +157,7 @@ cd build && ./kaguya_tests
 | Phase 3: 計算カーネル | ✅ 完了 | GEMM/特殊演算/量子化カーネル・ディスパッチャ |
 | Phase 4: 推論エンジン | ✅ 完了 | KVキャッシュ・推論パイプライン・アテンション・バッチ推論 |
 | Phase 5: CLI・API・ベンチマーク | ✅ 完了 | インタラクティブCLI・C API・ベンチマークスイート |
-| Phase 6: 最適化・検証 | 🔜 次フェーズ | |
+| Phase 6: 最適化・検証 | ✅ 完了 | キャッシュ最適化・メモリ帯域・精度検証・安定性 |
 
 ### フェーズ移行の判断
 

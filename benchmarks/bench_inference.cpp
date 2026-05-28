@@ -367,3 +367,57 @@ BENCHMARK(bench_pipeline_prefill)
     ->Args({256, 4, 4, 512, 8})
     ->Unit(benchmark::kMillisecond)
     ->Iterations(3);
+
+// ============================================================================
+// Phase 6: KV Cache HugePages benchmark
+// ============================================================================
+
+/// Benchmark KV cache fill performance to measure HugePages effect
+static void BM_kv_cache_hugepages(benchmark::State& state) {
+    const int64_t n_layers = state.range(0);
+    const int64_t n_kv_heads = state.range(1);
+    const int64_t head_dim = state.range(2);
+    const int64_t max_seq_len = state.range(3);
+
+    kaguya::MemoryManager::init();
+
+    for (auto _ : state) {
+        kaguya::KVCache cache(n_layers, n_kv_heads, head_dim, max_seq_len);
+
+        // Write to all positions for all layers and heads
+        for (int64_t layer = 0; layer < n_layers; ++layer) {
+            for (int64_t head = 0; head < n_kv_heads; ++head) {
+                for (int64_t pos = 0; pos < max_seq_len; ++pos) {
+                    float* k = cache.key(layer, head, pos);
+                    float* v = cache.value(layer, head, pos);
+                    for (int64_t d = 0; d < head_dim; ++d) {
+                        k[d] = static_cast<float>(pos * head_dim + d);
+                        v[d] = static_cast<float>(d * max_seq_len + pos);
+                    }
+                }
+            }
+        }
+
+        benchmark::DoNotOptimize(cache.key(0, 0, 0));
+    }
+
+    // Report throughput in GB/s
+    const int64_t total_elements = n_layers * n_kv_heads * max_seq_len * head_dim * 2; // key + value
+    const int64_t total_bytes = total_elements * sizeof(float);
+    state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * total_bytes);
+}
+
+// Small cache (fast to test)
+BENCHMARK(BM_kv_cache_hugepages)
+    ->Args({2, 4, 32, 64})
+    ->Unit(benchmark::kMicrosecond);
+
+// Medium cache (representative)
+BENCHMARK(BM_kv_cache_hugepages)
+    ->Args({4, 8, 64, 128})
+    ->Unit(benchmark::kMicrosecond);
+
+// Larger cache (stress test)
+BENCHMARK(BM_kv_cache_hugepages)
+    ->Args({8, 16, 64, 256})
+    ->Unit(benchmark::kMillisecond);

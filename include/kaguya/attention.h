@@ -12,8 +12,8 @@ namespace kaguya {
 /// Parameters for attention computation
 struct AttentionParams {
     const float* q;          ///< Query: [n_heads, head_dim]
-    const float* k_cache;    ///< Key cache for one KV head: [seq_len, head_dim]
-    const float* v_cache;    ///< Value cache for one KV head: [seq_len, head_dim]
+    const float* k_cache;    ///< Key cache: [n_kv_heads, kv_stride] — per-layer KV cache
+    const float* v_cache;    ///< Value cache: [n_kv_heads, kv_stride] — per-layer KV cache
     float* out;              ///< Output: [n_heads, head_dim]
     float* scores;           ///< Scratch: [n_heads, seq_len] (attention weights)
 
@@ -22,6 +22,7 @@ struct AttentionParams {
     int64_t head_dim;        ///< Dimension of each head
     int64_t seq_len;         ///< Current sequence length (positions in cache)
     int64_t n_rep;           ///< n_heads / n_kv_heads (GQA repetition factor)
+    int64_t kv_stride;       ///< Stride between KV heads in elements (= max_seq_len * head_dim for our cache)
 };
 
 /// Compute multi-head attention with GQA support

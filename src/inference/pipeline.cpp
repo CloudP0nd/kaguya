@@ -32,6 +32,8 @@ Pipeline::Pipeline(const Model& model)
     att_scores_.resize(static_cast<size_t>(hp.num_heads * hp.context_length), 0.0f);
     hb_.resize(static_cast<size_t>(hp.ffn_dim), 0.0f);
     hb2_.resize(static_cast<size_t>(hp.ffn_dim), 0.0f);
+    attn_proj_.resize(static_cast<size_t>(hp.emb_dim), 0.0f);
+    ffn_down_.resize(static_cast<size_t>(hp.emb_dim), 0.0f);
 
     // Weight buffer: largest possible weight (FFN up/gate: ffn_dim * emb_dim)
     const int64_t max_weight_elements = std::max(hp.ffn_dim * hp.emb_dim, hp.vocab_size * hp.emb_dim);
@@ -131,57 +133,23 @@ void Pipeline::forward_layer(int64_t layer, float* x, int64_t pos) {
     attn_params.seq_len = seq_len;
     attn_params.n_rep = hp.n_rep;
 
-    // For attention, we need key/value data in [n_kv_heads, seq_len, head_dim] layout.
-    // The KV cache stores [n_layers, n_kv_heads, max_seq_len, head_dim],
-    // so for a given layer, kv_cache_.key_head(layer, h) returns [max_seq_len, head_dim].
-    // We need [seq_len, head_dim] from this, which is just the first seq_len rows.
-    // The compute_attention function expects k_cache to be [n_kv_heads, seq_len, head_dim].
-    // We'll pass the layer-level pointer and let compute_attention handle the layout.
-
-    // compute_attention expects: k_cache + kv_h * seq_len * head_dim = &k_cache[kv_h][0][0]
-    // Our layout: kv_cache_.key_head(layer, 0) = [max_seq_len, head_dim] for head 0
-    // But the function expects all heads packed as [n_kv_heads, seq_len, head_dim].
-    // Our cache has [n_kv_heads, max_seq_len, head_dim] for a layer.
-    // The stride between heads is max_seq_len * head_dim, but the function assumes seq_len * head_dim.
-    // We need to handle this carefully.
-
-    // Solution: pass the layer's key/value data and let compute_attention use the correct strides.
-    // Actually, let me revise: we'll construct temporary contiguous [n_kv_heads, seq_len, head_dim] buffers
-    // for the attention computation, or modify compute_attention to accept the cache directly.
-
-    // For simplicity, we'll use the cache directly by computing offsets correctly.
-    // The key_head(layer, kv_h) returns a pointer to [max_seq_len, head_dim].
-    // We only need the first seq_len rows: key_head(layer, kv_h)[0 .. seq_len*head_dim-1]
-    // compute_attention expects k_cache[kv_h * seq_len * head_dim], but our data has
-    // k_cache[kv_h * max_seq_len * head_dim]. We need to pass the base and use proper indexing.
-
-    // Let's build a temporary contiguous buffer for attention.
-    // This is suboptimal but correct. Will optimize in Phase 6.
-    std::vector<float> k_attn(static_cast<size_t>(hp.num_kv_heads * seq_len * hp.head_dim));
-    std::vector<float> v_attn(static_cast<size_t>(hp.num_kv_heads * seq_len * hp.head_dim));
-
-    for (int64_t h = 0; h < hp.num_kv_heads; ++h) {
-        const float* k_src = kv_cache_.key_head(layer, h); // [max_seq_len, head_dim]
-        float* k_dst = k_attn.data() + h * seq_len * hp.head_dim;
-        std::memcpy(k_dst, k_src, static_cast<size_t>(seq_len * hp.head_dim) * sizeof(float));
-
-        const float* v_src = kv_cache_.value_head(layer, h);
-        float* v_dst = v_attn.data() + h * seq_len * hp.head_dim;
-        std::memcpy(v_dst, v_src, static_cast<size_t>(seq_len * hp.head_dim) * sizeof(float));
-    }
-
-    attn_params.k_cache = k_attn.data(); // [n_kv_heads, seq_len, head_dim]
-    attn_params.v_cache = v_attn.data(); // [n_kv_heads, seq_len, head_dim]
+    // Stride-aware attention: pass KV cache directly without copying.
+    // The KV cache layout is [n_kv_heads, max_seq_len, head_dim] per layer,
+    // with head_stride = max_seq_len * head_dim between KV heads.
+    // compute_attention uses kv_stride to index heads correctly.
+    attn_params.k_cache = kv_cache_.key_head(layer, 0);
+    attn_params.v_cache = kv_cache_.value_head(layer, 0);
+    attn_params.kv_stride = kv_cache_.head_stride(); // max_seq_len * head_dim
 
     compute_attention(attn_params);
 
-    // Output projection — compute wo * attn_out into a temp, then add residual
-    std::vector<float> attn_proj(static_cast<size_t>(hp.emb_dim), 0.0f);
-    weighted_project(attn_proj.data(), lw.wo, lw.wo_dtype, lw.wo_ne0, lw.wo_ne1, xb2_.data());
+    // Output projection — compute wo * attn_out into pre-allocated buffer, then add residual
+    std::fill(attn_proj_.begin(), attn_proj_.end(), 0.0f);
+    weighted_project(attn_proj_.data(), lw.wo, lw.wo_dtype, lw.wo_ne0, lw.wo_ne1, xb2_.data());
 
     // Residual connection: x = x + wo * attn_out
     for (int64_t i = 0; i < hp.emb_dim; ++i) {
-        x[i] = x[i] + attn_proj[static_cast<size_t>(i)];
+        x[i] = x[i] + attn_proj_[static_cast<size_t>(i)];
     }
 
     // ---- FFN ----
@@ -203,13 +171,13 @@ void Pipeline::forward_layer(int64_t layer, float* x, int64_t pos) {
         hb_[static_cast<size_t>(i)] *= hb2_[static_cast<size_t>(i)];
     }
 
-    // Down projection
-    std::vector<float> ffn_down(static_cast<size_t>(hp.emb_dim), 0.0f);
-    weighted_project(ffn_down.data(), lw.w_down, lw.w_down_dtype, lw.w_down_ne0, lw.w_down_ne1, hb_.data());
+    // Down projection — use pre-allocated buffer
+    std::fill(ffn_down_.begin(), ffn_down_.end(), 0.0f);
+    weighted_project(ffn_down_.data(), lw.w_down, lw.w_down_dtype, lw.w_down_ne0, lw.w_down_ne1, hb_.data());
 
     // Residual connection: x = x + ffn_down
     for (int64_t i = 0; i < hp.emb_dim; ++i) {
-        x[i] = x[i] + ffn_down[static_cast<size_t>(i)];
+        x[i] = x[i] + ffn_down_[static_cast<size_t>(i)];
     }
 }
 
@@ -266,7 +234,9 @@ void Pipeline::forward(int64_t pos, int32_t token) {
 }
 
 void Pipeline::prefill(const std::vector<int32_t>& tokens) {
+    if (tokens.empty()) return;  // Handle empty token list gracefully
     for (int32_t token : tokens) {
+        if (pos_ >= model_.hparams().context_length) break;
         forward(pos_, token);
         kv_cache_.advance(1);
         pos_++;
@@ -275,6 +245,11 @@ void Pipeline::prefill(const std::vector<int32_t>& tokens) {
 }
 
 int32_t Pipeline::decode(Sampler& sampler) {
+    // Check if context is full
+    if (pos_ >= model_.hparams().context_length) {
+        return -1;  // End of context
+    }
+
     // Forward pass at current position (the last token is already in recent_tokens_)
     int32_t last_token = recent_tokens_.empty() ? 0 : recent_tokens_.back();
     forward(pos_, last_token);

@@ -34,6 +34,7 @@ TEST(Attention, SingleHeadSinglePosition) {
     params.head_dim = head_dim;
     params.seq_len = seq_len;
     params.n_rep = n_rep;
+    params.kv_stride = seq_len * head_dim; // packed layout for test data
 
     compute_attention(params);
 
@@ -83,6 +84,7 @@ TEST(Attention, TwoPositionsPrefersSimilar) {
     params.head_dim = head_dim;
     params.seq_len = seq_len;
     params.n_rep = n_rep;
+    params.kv_stride = seq_len * head_dim; // packed layout for test data
 
     compute_attention(params);
 
@@ -125,6 +127,7 @@ TEST(Attention, GQA_TwoQueryHeadsOneKVHead) {
     params.head_dim = head_dim;
     params.seq_len = seq_len;
     params.n_rep = n_rep;
+    params.kv_stride = seq_len * head_dim; // packed layout for test data
 
     compute_attention(params);
 
@@ -175,6 +178,7 @@ TEST(Attention, AttentionWeightsSumToOne) {
     params.head_dim = head_dim;
     params.seq_len = seq_len;
     params.n_rep = n_rep;
+    params.kv_stride = seq_len * head_dim; // packed layout for test data
 
     compute_attention(params);
 
