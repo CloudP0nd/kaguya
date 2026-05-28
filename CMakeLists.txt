@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(kaguya VERSION 0.1.0 LANGUAGES CXX C)
+project(kaguya VERSION 0.2.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,6 +82,7 @@ set(KAGUYA_SOURCES
     src/inference/attention.cpp
     src/inference/batch.cpp
     src/sampling/sampler.cpp
+    src/api/kaguya_c_api.cpp
 )
 
 add_library(kaguya STATIC ${KAGUYA_SOURCES})
@@ -108,11 +109,26 @@ add_executable(kaguya_tests
     tests/unit/test_kv_cache.cpp
     tests/unit/test_attention.cpp
     tests/unit/test_special_ops.cpp
+    tests/unit/test_c_api.cpp
     tests/integration/test_inference.cpp
 )
 target_link_libraries(kaguya_tests PRIVATE kaguya GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(kaguya_tests)
+
+# ---- C API shared library ----
+
+add_library(kaguya_c SHARED src/api/kaguya_c_api.cpp)
+target_include_directories(kaguya_c PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(kaguya_c PRIVATE kaguya pthread)
+set_target_properties(kaguya_c PROPERTIES
+    OUTPUT_NAME "kaguya"
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 0
+)
 
 # ---- Benchmarks ----
 

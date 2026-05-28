@@ -374,5 +374,5 @@ kaguya/
 | Phase 2: GGUFモデルローダー | ✅ 完了 |
 | Phase 3: 計算カーネル | ✅ 完了 |
 | Phase 4: 推論エンジン | ✅ 完了 |
-| Phase 5: CLI・API・ベンチマーク | 🔜 次フェーズ |
-| Phase 6: 最適化・検証 | 未着手 |
+| Phase 5: CLI・API・ベンチマーク | ✅ 完了 |
+| Phase 6: 最適化・検証 | 🔜 次フェーズ |

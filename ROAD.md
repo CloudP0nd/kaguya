@@ -201,4 +201,65 @@ KVキャッシュのレイアウト設計には読み書きのトレードオフ
 
 ### PR
 
+- https://github.com/Carvlly/kaguya/pull/5
+
+---
+
+## Phase 5: CLI・API・ベンチマーク — ✅ 完了 (2026-05-28)
+
+### 成果物
+
+- **CLIインターフェース** (src/cli/main.cpp):
+  - インタラクティブチャットモード (`-i` / `--interactive`)
+  - プロンプト指定生成 (`-p` / `--prompt`)
+  - ストリーミング出力 (`--stream` / `--no-stream`)
+  - ベンチマークモード (`--bench`) — ウォームアップ付き複数イテレーション
+  - サンプリングパラメータの全指定対応 (temperature, top-k, top-p, min-p, repeat-penalty, seed)
+  - 生成速度表示 (tok/s) — prefill/decode分離計測
+  - SIGINT/SIGTERMによる安全な中断
+  - チャットモードでのパラメータ動的変更 (`/set` コマンド)
+  - バイトレベル簡易トークナイザ (BPEトークナイザは将来実装)
+- **C API** (include/kaguya/kaguya.h):
+  - `kaguya_model_load/free` — GGUFモデルのロード/解放
+  - `kaguya_context_create/free/reset` — 推論コンテキスト管理
+  - `kaguya_context_prompt_tokens` — プロンプト投入 (prefill)
+  - `kaguya_context_decode` — 1トークン生成
+  - `kaguya_context_generate` — 複数トークン生成
+  - `kaguya_context_logits` — ロジット取得
+  - `kaguya_tokenize/detokenize` — バイトレベルトークナイゼーション
+  - `kaguya_model_vocab_size/context_length/emb_dim/num_layers/num_heads` — モデル情報
+  - `kaguya_init/cpu_info/version` — ユーティリティ
+  - C互換 `extern "C"` リンケージ — Python/Rust等のバインディング対応
+  - 共有ライブラリ `libkaguya.so` ビルド対応
+- **ベンチマークスイート**:
+  - GEMMマイクロベンチマーク: FP32 dispatch/scalar/AVX-512/AVX2 + GEMV特化 (bench_gemm.cpp)
+  - 量子化マイクロベンチマーク: Q4_0/Q5_0/Q5_1/Q8_0デ量子化 + BF16/F16デ量子化 + 量子化 + 融合GEMM (bench_quantize.cpp)
+  - 特殊演算マイクロベンチマーク: Softmax/RMSNorm/LayerNorm/RoPE/SiLU/GELU (bench_inference.cpp)
+  - E2Eパイプラインベンチマーク: 合成モデルによるdecode/prefillスループット測定 (bench_inference.cpp)
+  - 全ベンチマークがGoogle Benchmarkフレームワークで構成
+- **C APIテスト** (tests/unit/test_c_api.cpp): 27テスト追加
+  - バージョン情報・初期化
+  - モデルロード失敗ケース (不正パス・NULL)
+  - コンテキスト作成・解放 (NULLセーフティ)
+  - トークナイゼーション (エンコード・デコード・エラーハンドリング)
+  - 全API関数のNULL引数エラーハンドリング検証
+- Google Test 183テスト全通過 (C API 27 + 既存 156)
+- バージョン v0.1.0 → v0.2.0
+
+### 重要な発見
+
+#### C API設計: opaque handle + malloc/freeパターン
+
+C APIでは opaque handle パターン (`kaguya_model*`, `kaguya_context*`)を採用し、ABI互換性を確保した。トークナイゼーション結果と生成テキストは呼び出し元が`free()`する設計（`kaguya_tokens_free`, `kaguya_text_free`）とし、C++の`std::vector`や`std::string`がC API境界を越えないようにした。これにより、C言語やPython ctypesから安全に呼び出し可能。
+
+#### ベンチマークの合成モデル設計
+
+E2Eパイプラインベンチマークでは実際のGGUFモデルファイルが不要な合成モデルを動的生成するアプローチを採用。`create_bench_model()`でHyperParamsを指定してModelWeightsを構築し、Pipelineを直接インスタンス化する。これによりベンダーマークをファイル依存なしで実行可能。静的変数のライフタイム問題（ポインタダングリング）に注意が必要 — `static`ストレージでウェイトデータを保持し、モデルの寿命中ポインタが有効であることを保証した。
+
+#### CLIベンチマークモードとGoogle Benchmarkの使い分け
+
+CLIの`--bench`モードはユーザーが手軽にtok/sを測定するための簡易ベンチマーク。Google Benchmark (`kaguya_bench`) はマイクロベンチマーク用でGFLOPS等の詳細な性能指標を提供する。両者は目的が異なるため併存させる。
+
+### PR
+
 - (次回のPRでupstreamに提出予定)
