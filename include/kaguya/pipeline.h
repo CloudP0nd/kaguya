@@ -10,11 +10,18 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include "kaguya/model.h"
 #include "kaguya/kv_cache.h"
 #include "kaguya/sampling.h"
 
 namespace kaguya {
+
+/// Generation stop condition
+struct GenerationStop {
+    int32_t eos_token_id = -1;  ///< EOS token ID to stop on (-1 = disabled)
+    bool stop_on_eos = true;    ///< Whether to stop when EOS is generated
+};
 
 /// Transformer inference pipeline
 class Pipeline {
@@ -39,6 +46,12 @@ public:
                                    int32_t n_predict,
                                    Sampler& sampler);
 
+    /// Convenience: generate n_predict tokens with EOS stopping
+    std::vector<int32_t> generate(const std::vector<int32_t>& prompt,
+                                   int32_t n_predict,
+                                   Sampler& sampler,
+                                   const GenerationStop& stop);
+
     const Model& model() const { return model_; }
     const KVCache& kv_cache() const { return kv_cache_; }
     int64_t current_pos() const { return pos_; }
@@ -48,6 +61,12 @@ public:
 
     /// Check if the context window is full
     bool is_context_full() const { return pos_ >= model_.hparams().context_length; }
+
+    /// Set EOS token ID for stopping
+    void set_eos_token_id(int32_t eos_id) { eos_token_id_ = eos_id; }
+
+    /// Get EOS token ID
+    int32_t eos_token_id() const { return eos_token_id_; }
 
 private:
     /// Forward pass for a single token at given position
@@ -85,6 +104,7 @@ private:
     std::vector<float> ffn_down_;      // [emb_dim] — FFN down projection
     std::vector<float> weight_buf_;    // scratch for dequantized weights
     std::vector<int32_t> recent_tokens_; // for repetition penalty
+    int32_t eos_token_id_ = -1;       // EOS token ID for stopping
 };
 
 } // namespace kaguya

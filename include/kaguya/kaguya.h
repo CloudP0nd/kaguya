@@ -105,10 +105,10 @@ void kaguya_context_reset(kaguya_context* ctx);
 int64_t kaguya_context_position(const kaguya_context* ctx);
 
 // ============================================================================
-// Tokenization (simple byte-level)
+// Tokenization (BPE or byte-level fallback)
 // ============================================================================
 
-/// Encode text to token IDs (byte-level, no BPE)
+/// Encode text to token IDs (BPE if available, byte-level fallback)
 /// Caller must free the returned array with kaguya_tokens_free()
 /// @param ctx Context handle
 /// @param text Input text (UTF-8)
@@ -120,7 +120,7 @@ int kaguya_tokenize(const kaguya_context* ctx,
                     int32_t** out_tokens,
                     int64_t* out_count);
 
-/// Decode token IDs to text (byte-level)
+/// Decode token IDs to text (BPE if available, byte-level fallback)
 /// Caller must free the returned string with kaguya_text_free()
 /// @param ctx Context handle
 /// @param tokens Array of token IDs
@@ -200,6 +200,54 @@ void kaguya_init(void);
 /// Get CPU feature summary string
 /// @return Summary string (static storage, do not free)
 const char* kaguya_cpu_info(void);
+
+// ============================================================================
+// Streaming generation
+// ============================================================================
+
+/// Callback function type for streaming token generation.
+/// Called once per generated token.
+/// @param token_id The generated token ID
+/// @param token_text The decoded text for this token (may be empty for special tokens)
+/// @param user_data User-provided pointer passed to generate_streaming
+/// @return 0 to continue generation, non-zero to stop
+typedef int (*kaguya_stream_callback)(int32_t token_id,
+                                       const char* token_text,
+                                       void* user_data);
+
+/// Generate tokens with a streaming callback.
+/// Each generated token triggers the callback before the next token is generated.
+/// Generation stops when: n_predict tokens generated, EOS is produced, context is full,
+/// or the callback returns non-zero.
+/// @param ctx Context handle
+/// @param n_predict Maximum number of tokens to generate
+/// @param temperature Sampling temperature
+/// @param top_k Top-K sampling parameter
+/// @param top_p Top-P sampling parameter
+/// @param repetition_penalty Repetition penalty
+/// @param callback Function called for each generated token
+/// @param user_data Pointer passed to callback
+/// @param out_count Output: actual number of tokens generated
+/// @return Array of generated token IDs (caller must free with kaguya_tokens_free), or NULL on error
+int32_t* kaguya_context_generate_streaming(kaguya_context* ctx,
+                                            int64_t n_predict,
+                                            float temperature,
+                                            int top_k,
+                                            float top_p,
+                                            float repetition_penalty,
+                                            kaguya_stream_callback callback,
+                                            void* user_data,
+                                            int64_t* out_count);
+
+/// Get EOS token ID from the model's tokenizer
+/// @param model Model handle
+/// @return EOS token ID, or -1 if not available
+int32_t kaguya_model_eos_token_id(const kaguya_model* model);
+
+/// Set EOS token ID for a context (enables EOS-based stopping)
+/// @param ctx Context handle
+/// @param eos_id EOS token ID (-1 to disable)
+void kaguya_context_set_eos_token(kaguya_context* ctx, int32_t eos_id);
 
 #ifdef __cplusplus
 }

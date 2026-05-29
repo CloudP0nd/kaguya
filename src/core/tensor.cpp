@@ -20,7 +20,7 @@ size_t data_type_element_size(DataType dt) {
         case DataType::Q5_1:   return 24;  // 32 elements in 24 bytes
         case DataType::Q8_0:   return 34;  // 32 elements in 34 bytes (2 + 32)
         case DataType::Q8_1:   return 36;  // 32 elements in 36 bytes
-        case DataType::Q2_K:   return 64;  // 256 elements in 64 bytes
+        case DataType::Q2_K:   return 84;  // 256 elements in 84 bytes
         case DataType::Q3_K:   return 110; // 256 elements in 110 bytes
         case DataType::Q4_K:   return 144; // 256 elements in 144 bytes
         case DataType::Q5_K:   return 176; // 256 elements in 176 bytes

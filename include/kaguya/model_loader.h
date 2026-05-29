@@ -6,6 +6,7 @@
 #include <memory>
 #include "kaguya/model.h"
 #include "kaguya/gguf_loader.h"
+#include "kaguya/tokenizer.h"
 
 namespace kaguya {
 
@@ -27,6 +28,9 @@ public:
     /// Get the GGUF loader (for raw metadata access)
     const GgufLoader& gguf() const { return *gguf_; }
 
+    /// Get the BPE tokenizer (built from GGUF metadata)
+    const BpeTokenizer& tokenizer() const { return tokenizer_; }
+
     /// Get model architecture name
     std::string arch_name() const;
 
@@ -37,12 +41,16 @@ private:
     std::unique_ptr<GgufLoader> gguf_;
     Model model_;
     ModelWeights weights_;  // Temporary storage during loading
+    BpeTokenizer tokenizer_;
 
     /// Extract hyperparameters from GGUF metadata
     bool extract_hparams();
 
     /// Build model weight references from GGUF tensor data
     bool build_weight_refs();
+
+    /// Build BPE tokenizer from GGUF metadata
+    bool build_tokenizer();
 
     /// Helper: try multiple name variants for a tensor
     const GgufTensorInfo* find_tensor(const std::vector<std::string>& names);

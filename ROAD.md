@@ -350,3 +350,66 @@ L2キャッシュに3つのタイルパネル（A, B, C）が収まるよう、`
 ### PR
 
 - (次回のPRでupstreamに提出予定)
+
+---
+
+## Phase 7: 実用化 — 🔧 進行中 (2026-05-29)
+
+### 成果物
+
+- **BPEトークナイザ** (include/kaguya/tokenizer.h, src/core/tokenizer.cpp):
+  - GGUFメタデータからBPEトークナイザを自動構築 (`tokenizer.ggml.tokens/scores/token_type/merges`)
+  - BPEマージルールの最長一致適用 — 最優先ペアの反復マージ
+  - 特殊トークン自動検出 (BOS/EOS/PAD/UNK) — メタデータID + トークン名パターンの両対応
+  - UTF-8バイトフォールバック — 未知文字の`<0xHH>`バイトトークンエンコーディング
+  - SentencePiece-style前処理 — 空白を▁(U+2581)に変換、先頭に▁を自動付与
+  - `encode()`/`decode()`/`decode_token()` API
+  - CLI統合: SimpleTokenizer→TokenizerWrapperに差し替え、BPE利用可能時は自動使用
+  - C API統合: `kaguya_tokenize`/`kaguya_detokenize`がBPE対応
+  - Google Test 19テスト追加 (ビルド・エンコード・デコード・ラウンドトリップ・BPEマージ・特殊トークン)
+- **K-quantデ量子化カーネル** (src/kernels/quantize.cpp):
+  - Q2_K: 2ビット量子化 + 4ビットスケール/min、4サブグループ×128要素スーパーグループ
+  - Q3_K: 3ビット量子化 (2ビットqs + 1ビットhmask符号) + 6ビットパックドスケール
+  - Q4_K: 4ビット量子化 + 6ビットパックドスケール/min (`get_scale_min_k4`ヘルパー)
+  - Q5_K: 5ビット量子化 (4ビットqs + 1ビットqh上位ビット) + Q4_Kと同じスケール符号化
+  - Q6_K: 6ビット量子化 (4ビット下位ql + 2ビット上位qh) + int8スケール
+  - Q8_K: 8ビット量子化 + fp32スーパーブロックスケール
+  - `dequantize_dispatch()`の全K-quant対応 — 部分ブロックの安全処理（256要素スタックバッファ使用）
+  - Q2_Kブロックサイズ修正: 64→84バイト (ggml block_q2_K構造体に合致)
+- **EOSトークン停止** (include/kaguya/pipeline.h):
+  - `Pipeline::set_eos_token_id()` / `eos_token_id()` — EOS IDの設定・取得
+  - `Pipeline::generate()` でEOS検出時の自動停止
+  - `GenerationStop` 構造体 — generate()のオーバーロードでEOS停止設定を渡せる
+  - CLI: 生成ループでEOS検出時の自動停止を追加
+- **C APIストリーミング** (include/kaguya/kaguya.h):
+  - `kaguya_stream_callback` — トークン生成ごとのコールバック関数型
+  - `kaguya_context_generate_streaming()` — ストリーミング生成 + コールバック + EOS停止
+  - `kaguya_model_eos_token_id()` — モデルのEOS ID取得
+  - `kaguya_context_set_eos_token()` — コンテキストにEOS ID設定
+- Google Test 232テスト全通過 (BPEトークナイザ 19 + 既存 213)
+
+### 重要な発見
+
+#### BPEトークナイザ構築: GGUFメタデータの活用
+
+Phase 1〜6までバイトレベルトークナイザのみで、実際のGGUFモデルで意味のあるテキスト生成が不可能だった。GGUFメタデータの`tokenizer.ggml.tokens`（トークン文字列配列）、`tokenizer.ggml.scores`（スコア）、`tokenizer.ggml.token_type`（NORMAL/UNKNOWN/CONTROL/BYTE）、`tokenizer.ggml.merges`（BPEマージルール）を読み込むことで、モデル固有のBPEトークナイザを自動構築可能になった。特に`tokenizer.ggml.bos_token_id`/`eos_token_id`メタデータとトークン名パターンの両方からBOS/EOSを検出する二段構えの設計が重要 — 一部のGGUFファイルではメタデータIDが欠落している場合がある。
+
+#### K-quantブロックレイアウトの複雑さ
+
+Q4_K/Q5_Kのスケール符号化は6ビット値が12バイトにパックされており、ggmlの`get_scale_min_k4`ヘルパーでデコードが必要。3つの6ビット値が2バイトにパックされる方式で、下位6ビット・中位6ビット・上位4ビット+隣接バイトの2ビットという変則的なレイアウト。Q3_Kはさらに別の6ビットパッキング方式（kmask1/kmask2ビットマスク使用）を採用しており、Q4_K/Q5_Kとは異なる。
+
+#### C++文字列リテラルのUTF-8エスケープ問題
+
+テストコードで`"\xE2\x96\x81a"`のような文字列リテラルを書くと、コンパイラが`\x81a`を1つの16進エスケープとして解釈してしまう問題が発生。回避策として`const std::string sp = "\xE2\x96\x81";` + `sp + "a"`のように、変数に分けて結合する必要がある。
+
+### トラブルシューティング
+
+| 問題 | 原因 | 解決策 |
+|------|------|--------|
+| `<optional>`未インクルード | tokenizer.hで`std::optional`使用時にヘッダ不足 | `#include <optional>` 追加 |
+| Q2_Kデ量子化テストの失敗 | Q2_Kがサポート済みになったのに「未サポートタイプゼロ出力」テストがQ2_Kを使用 | IQ1_Sに変更 |
+| UTF-8エスケープの誤解析 | `"\xE2\x96\x81a"`が`\x81a`として解釈 | 変数に分けて結合 |
+
+### PR
+
+- (次回のPRでupstreamに提出予定)

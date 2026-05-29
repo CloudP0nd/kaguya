@@ -1,6 +1,7 @@
 #include "kaguya/kaguya.h"
 #include "kaguya/model.h"
 #include "kaguya/model_loader.h"
+#include "kaguya/tokenizer.h"
 #include "kaguya/pipeline.h"
 #include "kaguya/sampling.h"
 #include "kaguya/cpu_features.h"
@@ -27,10 +28,17 @@ struct kaguya_context {
 };
 
 // ============================================================================
-// Simple byte-level tokenizer (shared with CLI)
+// Internal tokenizer — uses BPE if available, falls back to byte-level
 // ============================================================================
 
-static std::vector<int32_t> simple_encode(const std::string& text) {
+static std::vector<int32_t> internal_encode(const kaguya_model* model, const std::string& text) {
+    if (model && model->loader) {
+        const auto& tok = model->loader->tokenizer();
+        if (tok.is_valid()) {
+            return tok.encode(text);
+        }
+    }
+    // Fallback: byte-level
     std::vector<int32_t> tokens;
     tokens.reserve(text.size());
     for (unsigned char c : text) {
@@ -39,7 +47,15 @@ static std::vector<int32_t> simple_encode(const std::string& text) {
     return tokens;
 }
 
-static std::string simple_decode(const int32_t* tokens, int64_t count) {
+static std::string internal_decode(const kaguya_model* model, const int32_t* tokens, int64_t count) {
+    if (model && model->loader) {
+        const auto& tok = model->loader->tokenizer();
+        if (tok.is_valid()) {
+            std::vector<int32_t> vec(tokens, tokens + count);
+            return tok.decode(vec, true);
+        }
+    }
+    // Fallback: byte-level
     std::string result;
     result.reserve(static_cast<size_t>(count));
     for (int64_t i = 0; i < count; ++i) {
@@ -163,14 +179,14 @@ int64_t kaguya_context_position(const kaguya_context* ctx) {
 // Tokenization
 // ============================================================================
 
-int kaguya_tokenize(const kaguya_context* /*ctx*/,
+int kaguya_tokenize(const kaguya_context* ctx,
                     const char* text,
                     int32_t** out_tokens,
                     int64_t* out_count)
 {
     if (!text || !out_tokens || !out_count) return -1;
 
-    auto tokens = simple_encode(text);
+    auto tokens = internal_encode(ctx ? ctx->model : nullptr, text);
     *out_count = static_cast<int64_t>(tokens.size());
 
     if (tokens.empty()) {
@@ -185,13 +201,13 @@ int kaguya_tokenize(const kaguya_context* /*ctx*/,
     return 0;
 }
 
-char* kaguya_detokenize(const kaguya_context* /*ctx*/,
+char* kaguya_detokenize(const kaguya_context* ctx,
                          const int32_t* tokens,
                          int64_t count)
 {
     if (!tokens || count <= 0) return nullptr;
 
-    std::string text = simple_decode(tokens, count);
+    std::string text = internal_decode(ctx ? ctx->model : nullptr, tokens, count);
     char* result = static_cast<char*>(std::malloc(text.size() + 1));
     if (!result) return nullptr;
 
@@ -297,4 +313,89 @@ static std::string s_cpu_info_cache;
 const char* kaguya_cpu_info(void) {
     s_cpu_info_cache = kaguya::CpuFeatureDetector::summary();
     return s_cpu_info_cache.c_str();
+}
+
+// ============================================================================
+// Streaming generation
+// ============================================================================
+
+int32_t* kaguya_context_generate_streaming(kaguya_context* ctx,
+                                            int64_t n_predict,
+                                            float temperature,
+                                            int top_k,
+                                            float top_p,
+                                            float repetition_penalty,
+                                            kaguya_stream_callback callback,
+                                            void* user_data,
+                                            int64_t* out_count)
+{
+    if (!ctx || !ctx->pipeline || !out_count) return nullptr;
+
+    kaguya::SamplingParams sp;
+    sp.temperature = temperature;
+    sp.top_k = top_k;
+    sp.top_p = top_p;
+    sp.repetition_penalty = repetition_penalty;
+    kaguya::Sampler sampler(sp);
+
+    std::vector<int32_t> tokens;
+    tokens.reserve(static_cast<size_t>(n_predict));
+
+    for (int64_t i = 0; i < n_predict; ++i) {
+        if (ctx->pipeline->is_context_full()) break;
+
+        int32_t token = ctx->pipeline->decode(sampler);
+        tokens.push_back(token);
+
+        // Check for EOS
+        if (ctx->pipeline->eos_token_id() >= 0 && token == ctx->pipeline->eos_token_id()) {
+            break;
+        }
+
+        // Call callback if provided
+        if (callback) {
+            // Decode token text
+            std::string token_text;
+            if (ctx->model && ctx->model->loader) {
+                const auto& tok = ctx->model->loader->tokenizer();
+                if (tok.is_valid()) {
+                    token_text = tok.decode_token(token, true);
+                } else {
+                    if (token >= 0 && token < 256) {
+                        token_text = std::string(1, static_cast<char>(token));
+                    }
+                }
+            }
+
+            int result = callback(token, token_text.c_str(), user_data);
+            if (result != 0) break; // User requested stop
+        }
+    }
+
+    *out_count = static_cast<int64_t>(tokens.size());
+    if (tokens.empty()) return nullptr;
+
+    int32_t* result = static_cast<int32_t*>(std::malloc(tokens.size() * sizeof(int32_t)));
+    if (!result) {
+        *out_count = 0;
+        return nullptr;
+    }
+
+    std::memcpy(result, tokens.data(), tokens.size() * sizeof(int32_t));
+    return result;
+}
+
+int32_t kaguya_model_eos_token_id(const kaguya_model* model) {
+    if (!model || !model->loader) return -1;
+    const auto& tok = model->loader->tokenizer();
+    if (tok.is_valid()) {
+        return tok.eos_token_id();
+    }
+    return -1;
+}
+
+void kaguya_context_set_eos_token(kaguya_context* ctx, int32_t eos_id) {
+    if (ctx && ctx->pipeline) {
+        ctx->pipeline->set_eos_token_id(eos_id);
+    }
 }

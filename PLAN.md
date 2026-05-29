@@ -375,4 +375,53 @@ kaguya/
 | Phase 3: 計算カーネル | ✅ 完了 |
 | Phase 4: 推論エンジン | ✅ 完了 |
 | Phase 5: CLI・API・ベンチマーク | ✅ 完了 |
-| Phase 6: 最適化・検証 | ✅ 完了 | キャッシュ最適化・メモリ帯域・精度検証・安定性 |
+| Phase 6: 最適化・検証 | ✅ 完了 |
+| Phase 7: 実用化 | 🔧 進行中 | BPEトークナイザ・K-quant対応・EOS停止・並列Prefill・ストリーミングAPI |
+
+---
+
+### Phase 7: 実用化 — リアルモデル推論対応
+
+Phase 1〜6で計算基盤は完成したが、実際のGGUFモデルで推論を行うための必須機能が欠けている。
+Phase 7では「合成モデルテストが通る」状態から「実モデルで正しく推論できる」状態への移行を目指す。
+
+#### Task 7.1: BPEトークナイザ (★最優先)
+- GGUFメタデータ (`tokenizer.ggml.tokens`, `tokenizer.ggml.scores`, `tokenizer.ggml.token_type`, `tokenizer.ggml.merges`) からBPEトークナイザを構築
+- BPEマージルールの適用 (最長一致ペアの反復マージ)
+- 特殊トークン対応 (BOS/EOS/PAD/UNK)
+- UTF-8バイトフォールバック (未知文字のバイトエンコーディング)
+- `include/kaguya/tokenizer.h` — BpeTokenizer クラス
+- `src/core/tokenizer.cpp` — 実装
+- CLI・C APIへの統合 (SimpleTokenizer差し替え)
+- **現在バイトレベルのみ → 実モデルで意味のあるテキスト生成が不可能な状態を解消**
+
+#### Task 7.2: K-quantデ量子化カーネル
+- Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K のブロックレイアウト定義とデ量子化実装
+- K-quant融合GEMM (Q4_K, Q5_K, Q6_K の行ごとオンザフライデ量子化+行列積)
+- `dequantize_dispatch()` のK-quant対応拡張
+- **Q4_K_M/Q5_K_M等の最普及フォーマットで現在ゴミ出力になる問題を解消**
+
+#### Task 7.3: EOSトークン停止 + アーキテクチャ固有フォワードパス
+- EOSトークン検出による自動停止 (`Pipeline::decode()` / `Pipeline::generate()`)
+- BOSトークン自動付与オプション
+- アーキテクチャ固有処理:
+  - Gemma: 最終層のRMSNormゲイン乗算差異
+  - Qwen2: RMSNormイプシロン値の差異
+  - Phi-3: GeLU→SiLU切り替え等
+- `Pipeline::generate()` のmax_tokens + EOS停止の両対応
+
+#### Task 7.4: 並列Prefill
+- プロンプト処理のバッチGEMM化 (1トークンずつ→シーケンス一括処理)
+- Prefill時のM>1 GEMM (Q*K^T をバッチ行列積で一括計算)
+- `Pipeline::prefill()` の最適化 — 逐次ループ→バッチGEMV
+
+#### Task 7.5: C APIストリーミングコールバック
+- `kaguya_context_generate_streaming(ctx, callback, user_data)` — トークン生成ごとのコールバック
+- `kaguya_context_decode_with_text(ctx, ...)` — トークンID + テキスト同時返却
+- BPEトークナイザ統合による `kaguya_tokenize` / `kaguya_detokenize` のBPE対応化
+
+#### Task 7.6: 実モデルテストインフラ
+- 小規模GGUFモデルダウンロードスクリプト (`tools/download_test_model.sh`)
+- E2E推論テスト (実際のGGUFモデルで推論結果の整合性検証)
+- BPEトークナイザの正確性テスト (既知テキストのエンコード/デコード往復)
+- K-quantデ量子化精度テスト

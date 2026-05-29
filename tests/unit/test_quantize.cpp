@@ -355,7 +355,8 @@ TEST(QuantizeDispatch, UnsupportedTypeZerosOutput) {
     std::vector<float> output(n_elements, 999.0f);
     uint8_t dummy = 0;
 
-    dequantize_dispatch(DataType::Q2_K, &dummy, output.data(), n_elements);
+    // IQ1_S is truly unsupported — should produce zero output
+    dequantize_dispatch(DataType::IQ1_S, &dummy, output.data(), n_elements);
 
     for (int64_t i = 0; i < n_elements; ++i) {
         EXPECT_FLOAT_EQ(output[i], 0.0f) << "at index " << i;

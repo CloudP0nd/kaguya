@@ -280,9 +280,29 @@ std::vector<int32_t> Pipeline::generate(const std::vector<int32_t>& prompt,
 
         int32_t token = decode(sampler);
         output.push_back(token);
+
+        // Check for EOS
+        if (eos_token_id_ >= 0 && token == eos_token_id_) break;
     }
 
     return output;
+}
+
+std::vector<int32_t> Pipeline::generate(const std::vector<int32_t>& prompt,
+                                          int32_t n_predict,
+                                          Sampler& sampler,
+                                          const GenerationStop& stop) {
+    // Set EOS token from stop config
+    int32_t prev_eos = eos_token_id_;
+    if (stop.eos_token_id >= 0) {
+        eos_token_id_ = stop.eos_token_id;
+    }
+
+    auto result = generate(prompt, n_predict, sampler);
+
+    // Restore previous EOS setting
+    eos_token_id_ = prev_eos;
+    return result;
 }
 
 } // namespace kaguya

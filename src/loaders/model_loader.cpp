@@ -31,6 +31,12 @@ bool ModelLoader::load(const std::string& path, bool mmap) {
         return false;
     }
 
+    // Step 4: Build tokenizer from GGUF metadata
+    if (!build_tokenizer()) {
+        // Non-fatal: tokenizer may not be present in all GGUF files
+        std::cerr << "Kaguya: Warning — could not build BPE tokenizer (byte-level fallback will be used)\n";
+    }
+
     // Transfer to Model
     model_.set_weights(std::move(weights_));
 
@@ -382,6 +388,111 @@ void ModelLoader::print_info() const {
 
     // Output projection
     std::cout << "\nTied embeddings: " << (weights_.output_proj ? "no" : "yes") << "\n";
+
+    // Tokenizer info
+    if (tokenizer_.is_valid()) {
+        std::cout << "\nTokenizer: BPE (vocab_size=" << tokenizer_.vocab_size() << ")\n";
+        if (tokenizer_.bos_token_id() >= 0) {
+            std::cout << "  BOS token: " << tokenizer_.bos_token_id()
+                      << " (" << tokenizer_.token_text(tokenizer_.bos_token_id()) << ")\n";
+        }
+        if (tokenizer_.eos_token_id() >= 0) {
+            std::cout << "  EOS token: " << tokenizer_.eos_token_id()
+                      << " (" << tokenizer_.token_text(tokenizer_.eos_token_id()) << ")\n";
+        }
+    } else {
+        std::cout << "\nTokenizer: byte-level (no BPE metadata found)\n";
+    }
+}
+
+bool ModelLoader::build_tokenizer() {
+    // Read tokenizer.ggml.tokens (required)
+    std::vector<std::string> tokens;
+    {
+        auto* meta = gguf_->metadata("tokenizer.ggml.tokens");
+        if (!meta || !meta->is_array()) {
+            return false;
+        }
+        const auto& arr = meta->as_array();
+        tokens.reserve(arr.size());
+        for (const auto& item : arr) {
+            if (item.is_string()) {
+                tokens.push_back(item.as_string());
+            } else {
+                tokens.push_back("");
+            }
+        }
+    }
+
+    if (tokens.empty()) return false;
+
+    // Read tokenizer.ggml.scores (optional)
+    std::vector<float> scores;
+    {
+        auto* meta = gguf_->metadata("tokenizer.ggml.scores");
+        if (meta && meta->is_array()) {
+            const auto& arr = meta->as_array();
+            scores.reserve(arr.size());
+            for (const auto& item : arr) {
+                scores.push_back(static_cast<float>(item.as_float()));
+            }
+        }
+    }
+
+    // Read tokenizer.ggml.token_type (optional)
+    std::vector<int32_t> token_types;
+    {
+        auto* meta = gguf_->metadata("tokenizer.ggml.token_type");
+        if (meta && meta->is_array()) {
+            const auto& arr = meta->as_array();
+            token_types.reserve(arr.size());
+            for (const auto& item : arr) {
+                token_types.push_back(static_cast<int32_t>(item.as_int()));
+            }
+        }
+    }
+
+    // Read tokenizer.ggml.merges (optional — only for BPE models)
+    std::vector<std::string> merges;
+    {
+        auto* meta = gguf_->metadata("tokenizer.ggml.merges");
+        if (meta && meta->is_array()) {
+            const auto& arr = meta->as_array();
+            merges.reserve(arr.size());
+            for (const auto& item : arr) {
+                if (item.is_string()) {
+                    merges.push_back(item.as_string());
+                }
+            }
+        }
+    }
+
+    // Read BOS/EOS token IDs from metadata
+    int32_t bos_id = -1;
+    int32_t eos_id = -1;
+
+    if (auto v = gguf_->metadata_int("tokenizer.ggml.bos_token_id")) {
+        bos_id = static_cast<int32_t>(*v);
+    }
+    if (auto v = gguf_->metadata_int("tokenizer.ggml.eos_token_id")) {
+        eos_id = static_cast<int32_t>(*v);
+    }
+
+    // Determine add_bos from architecture
+    // Most models add BOS automatically, but some (like Gemma) don't
+    bool add_bos = true;
+    if (weights_.arch == ModelArch::GEMMA) {
+        // Gemma models typically include BOS in the prompt template
+        add_bos = false;
+    }
+
+    // Check for add_bos_token metadata
+    if (auto v = gguf_->metadata_int("tokenizer.ggml.add_bos_token")) {
+        add_bos = (*v != 0);
+    }
+
+    // Build the tokenizer
+    return tokenizer_.build(tokens, scores, token_types, merges, bos_id, eos_id, add_bos);
 }
 
 } // namespace kaguya

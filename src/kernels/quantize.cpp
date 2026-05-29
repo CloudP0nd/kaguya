@@ -85,6 +85,102 @@ struct Q5_1Block {
 static_assert(sizeof(Q5_1Block) == 24, "Q5_1 block must be 24 bytes");
 
 // ============================================================================
+// K-quant block structure definitions (ggml-compatible, QK_K = 256)
+// ============================================================================
+
+static constexpr int QK_K = 256;       // Number of elements per K-quant super-block
+static constexpr int K_SCALE_SIZE = 12; // Size of packed scales array for Q4_K/Q5_K
+
+// Q2_K: 2-bit quantization with per-group scale and min
+// weight = d * scale_4bit * q_2bit - dmin * min_4bit
+// 16 groups of 16 elements, scales and mins quantized with 4 bits
+// Effectively 2.625 bpw
+struct Q2_KBlock {
+    uint8_t scales[QK_K / 16]; // 16 bytes: scales and mins, quantized with 4 bits
+    uint8_t qs[QK_K / 4];      // 64 bytes: 2-bit quantized values (4 per byte)
+    uint16_t d;                 // FP16 super-block scale for quantized scales
+    uint16_t dmin;              // FP16 super-block scale for quantized mins
+};
+static_assert(sizeof(Q2_KBlock) == 84, "Q2_K block must be 84 bytes");
+
+// Q3_K: 3-bit quantization with per-group scale (no min)
+// weight = d * (scale_6bit - 32) * (q_2bit - hmask_offset)
+// 16 groups of 16 elements, scales quantized with 6 bits
+// Effectively 3.4375 bpw
+struct Q3_KBlock {
+    uint8_t hmask[QK_K / 8];   // 32 bytes: sign mask (1 bit per element)
+    uint8_t qs[QK_K / 4];      // 64 bytes: low 2 bits per element
+    uint8_t scales[12];         // 12 bytes: scales, quantized with 6 bits
+    uint16_t d;                 // FP16 super-block scale
+};
+static_assert(sizeof(Q3_KBlock) == 110, "Q3_K block must be 110 bytes");
+
+// Q4_K: 4-bit quantization with per-group scale and min
+// weight = d * scale_6bit * q_4bit - dmin * min_6bit
+// 8 groups of 32 elements, scales/mins quantized with 6 bits
+// Effectively 4.5 bpw
+struct Q4_KBlock {
+    uint16_t d;                 // FP16 super-block scale for quantized scales
+    uint16_t dmin;              // FP16 super-block scale for quantized mins
+    uint8_t scales[K_SCALE_SIZE]; // 12 bytes: scales and mins, quantized with 6 bits
+    uint8_t qs[QK_K / 2];      // 128 bytes: 4-bit quantized values
+};
+static_assert(sizeof(Q4_KBlock) == 144, "Q4_K block must be 144 bytes");
+
+// Q5_K: 5-bit quantization with per-group scale and min
+// weight = d * scale_6bit * q_5bit - dmin * min_6bit
+// 8 groups of 32 elements, scales/mins quantized with 6 bits
+// Effectively 5.5 bpw
+struct Q5_KBlock {
+    uint16_t d;                 // FP16 super-block scale for quantized scales
+    uint16_t dmin;              // FP16 super-block scale for quantized mins
+    uint8_t scales[K_SCALE_SIZE]; // 12 bytes: scales and mins, quantized with 6 bits
+    uint8_t qh[QK_K / 8];      // 32 bytes: 5th bit for each element
+    uint8_t qs[QK_K / 2];      // 128 bytes: low 4 bits per element
+};
+static_assert(sizeof(Q5_KBlock) == 176, "Q5_K block must be 176 bytes");
+
+// Q6_K: 6-bit quantization with per-group scale (no min)
+// weight = d * scale_8bit * (q_6bit - 32)
+// 16 groups of 16 elements, scales stored as int8_t
+// Effectively 6.5625 bpw
+struct Q6_KBlock {
+    uint8_t ql[QK_K / 2];      // 128 bytes: lower 4 bits per element
+    uint8_t qh[QK_K / 4];      // 64 bytes: upper 2 bits per element
+    int8_t scales[QK_K / 16];  // 16 bytes: per-group scales, quantized with 8 bits
+    uint16_t d;                 // FP16 super-block scale
+};
+static_assert(sizeof(Q6_KBlock) == 210, "Q6_K block must be 210 bytes");
+
+// Q8_K: 8-bit quantization with per-block scale (no min)
+// weight = d * q_8bit
+// Intermediate quantization type used for dot products
+struct Q8_KBlock {
+    float d;                    // FP32 super-block scale
+    int8_t qs[QK_K];           // 256 bytes: 8-bit quantized values
+    int16_t bsums[QK_K / 16];  // 32 bytes: sum of quants in groups of 16
+};
+static_assert(sizeof(Q8_KBlock) == 292, "Q8_K block must be 292 bytes");
+
+// ============================================================================
+// K-quant helper functions
+// ============================================================================
+
+/// Decode scale and min from the packed scales array for Q4_K/Q5_K.
+/// The 12-byte scales array encodes 8 scale+min pairs using 6 bits each.
+/// For j < 4:  scale = scales[j] & 63, min = scales[j+4] & 63
+/// For j >= 4: upper bits are packed from earlier bytes
+static inline void get_scale_min_k4(int j, const uint8_t* q, uint8_t* d, uint8_t* m) {
+    if (j < 4) {
+        *d = q[j] & 63;
+        *m = q[j + 4] & 63;
+    } else {
+        *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+        *m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);
+    }
+}
+
+// ============================================================================
 // Dequantization kernels
 // ============================================================================
 
@@ -172,6 +268,218 @@ void dequantize_q5_1(const void* data, float* out, int64_t n_blocks) {
     }
 }
 
+// ============================================================================
+// K-quant dequantization kernels
+// ============================================================================
+
+void dequantize_q2_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q2_KBlock*>(block);
+    const float d   = fp16_to_fp32(b->d);
+    const float min = fp16_to_fp32(b->dmin);
+    const uint8_t* q = b->qs;
+
+    int is = 0;
+    // Process 2 super-groups of 128 elements each
+    for (int n = 0; n < QK_K; n += 128) {
+        int shift = 0;
+        // 4 sub-groups per super-group, each producing 32 elements
+        for (int j = 0; j < 4; ++j) {
+            // First 16 elements of sub-group
+            uint8_t sc = b->scales[is++];
+            float dl = d * (sc & 0xF);
+            float ml = min * (sc >> 4);
+            for (int l = 0; l < 16; ++l) {
+                out[n + j * 32 + l] = dl * static_cast<float>(static_cast<int8_t>((q[l] >> shift) & 3)) - ml;
+            }
+
+            // Second 16 elements of sub-group
+            sc = b->scales[is++];
+            dl = d * (sc & 0xF);
+            ml = min * (sc >> 4);
+            for (int l = 0; l < 16; ++l) {
+                out[n + j * 32 + 16 + l] = dl * static_cast<float>(static_cast<int8_t>((q[l + 16] >> shift) & 3)) - ml;
+            }
+
+            shift += 2;
+        }
+        q += 32;
+    }
+}
+
+void dequantize_q2_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q2_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q2_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
+void dequantize_q3_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q3_KBlock*>(block);
+    const float d_all = fp16_to_fp32(b->d);
+    const uint8_t* q = b->qs;
+    const uint8_t* hm = b->hmask;
+
+    // Unpack the 12-byte scales into 16 6-bit values
+    // The packing uses 3 6-bit values per pair of bytes
+    const uint32_t kmask1 = 0x03030303;
+    const uint32_t kmask2 = 0x0f0f0f0f;
+    uint32_t aux[4];
+    const int8_t* scales = reinterpret_cast<const int8_t*>(aux);
+
+    std::memcpy(aux, b->scales, 12);
+    uint32_t tmp = aux[2];
+    aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
+    aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
+    aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
+    aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
+
+    int is = 0;
+    uint8_t m = 1;
+    // Process 2 super-groups of 128 elements each
+    for (int n = 0; n < QK_K; n += 128) {
+        int shift = 0;
+        // 4 sub-groups per super-group, each producing 32 elements
+        for (int j = 0; j < 4; ++j) {
+            // First 16 elements of sub-group
+            float dl = d_all * (scales[is++] - 32);
+            for (int l = 0; l < 16; ++l) {
+                out[n + j * 32 + l] = dl * static_cast<float>(
+                    static_cast<int8_t>((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
+            }
+
+            // Second 16 elements of sub-group
+            dl = d_all * (scales[is++] - 32);
+            for (int l = 0; l < 16; ++l) {
+                out[n + j * 32 + 16 + l] = dl * static_cast<float>(
+                    static_cast<int8_t>((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4));
+            }
+
+            shift += 2;
+            m <<= 1;
+        }
+        q += 32;
+    }
+}
+
+void dequantize_q3_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q3_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q3_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
+void dequantize_q4_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q4_KBlock*>(block);
+    const uint8_t* q = b->qs;
+    const float d   = fp16_to_fp32(b->d);
+    const float min = fp16_to_fp32(b->dmin);
+
+    int is = 0;
+    uint8_t sc, m;
+    // 8 groups of 32 elements each (256 / 32 = 8 groups)
+    for (int j = 0; j < QK_K; j += 64) {
+        get_scale_min_k4(is + 0, b->scales, &sc, &m);
+        const float d1 = d * sc; const float m1 = min * m;
+        get_scale_min_k4(is + 1, b->scales, &sc, &m);
+        const float d2 = d * sc; const float m2 = min * m;
+        for (int l = 0; l < 32; ++l) out[j + l]      = d1 * (q[l] & 0xF) - m1;
+        for (int l = 0; l < 32; ++l) out[j + 32 + l]  = d2 * (q[l] >> 4)  - m2;
+        q += 32;
+        is += 2;
+    }
+}
+
+void dequantize_q4_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q4_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q4_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
+void dequantize_q5_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q5_KBlock*>(block);
+    const uint8_t* ql = b->qs;
+    const uint8_t* qh = b->qh;
+    const float d   = fp16_to_fp32(b->d);
+    const float min = fp16_to_fp32(b->dmin);
+
+    int is = 0;
+    uint8_t sc, m;
+    uint8_t u1 = 1, u2 = 2;
+    // 8 groups of 32 elements each (256 / 32 = 8 groups)
+    for (int j = 0; j < QK_K; j += 64) {
+        get_scale_min_k4(is + 0, b->scales, &sc, &m);
+        const float d1 = d * sc; const float m1 = min * m;
+        get_scale_min_k4(is + 1, b->scales, &sc, &m);
+        const float d2 = d * sc; const float m2 = min * m;
+        for (int l = 0; l < 32; ++l) {
+            out[j + l]      = d1 * static_cast<float>((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1;
+        }
+        for (int l = 0; l < 32; ++l) {
+            out[j + 32 + l]  = d2 * static_cast<float>((ql[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2;
+        }
+        ql += 32;
+        is += 2;
+        u1 <<= 2;
+        u2 <<= 2;
+    }
+}
+
+void dequantize_q5_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q5_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q5_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
+void dequantize_q6_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q6_KBlock*>(block);
+    const float d = fp16_to_fp32(b->d);
+    const uint8_t* ql = b->ql;
+    const uint8_t* qh = b->qh;
+    const int8_t* sc = b->scales;
+
+    // Process 2 super-groups of 128 elements each
+    for (int n = 0; n < QK_K; n += 128) {
+        for (int l = 0; l < 32; ++l) {
+            const int is_idx = l / 16;
+            const int8_t q1 = static_cast<int8_t>((ql[l]      & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+            const int8_t q2 = static_cast<int8_t>((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+            const int8_t q3 = static_cast<int8_t>((ql[l]      >> 4)  | (((qh[l] >> 4) & 3) << 4)) - 32;
+            const int8_t q4 = static_cast<int8_t>((ql[l + 32] >> 4)  | (((qh[l] >> 6) & 3) << 4)) - 32;
+            out[l]      = d * sc[is_idx + 0] * q1;
+            out[l + 32] = d * sc[is_idx + 2] * q2;
+            out[l + 64] = d * sc[is_idx + 4] * q3;
+            out[l + 96] = d * sc[is_idx + 6] * q4;
+        }
+        out += 128;
+        ql += 64;
+        qh += 32;
+        sc += 8;
+    }
+}
+
+void dequantize_q6_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q6_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q6_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
+void dequantize_q8_k_block(const void* block, float* out) {
+    const auto* b = static_cast<const Q8_KBlock*>(block);
+    for (int j = 0; j < QK_K; ++j) {
+        out[j] = b->d * static_cast<float>(b->qs[j]);
+    }
+}
+
+void dequantize_q8_k(const void* data, float* out, int64_t n_blocks) {
+    const auto* blocks = static_cast<const Q8_KBlock*>(data);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        dequantize_q8_k_block(&blocks[b], out + b * QK_K);
+    }
+}
+
 void dequantize_bf16(const void* data, float* out, int64_t n_elements) {
     const auto* src = static_cast<const uint16_t*>(data);
     for (int64_t i = 0; i < n_elements; ++i) {
@@ -215,6 +523,92 @@ void dequantize_dispatch(DataType dtype, const void* data, float* out, int64_t n
             // No conversion needed
             std::memcpy(out, data, static_cast<size_t>(n_elements) * sizeof(float));
             break;
+        // ---- K-quant types (256 elements per block) ----
+        case DataType::Q2_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q2_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                // Partial last block: dequantize into temp buffer, copy only needed elements
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q2_k_block(bdata + full_blocks * sizeof(Q2_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
+        case DataType::Q3_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q3_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q3_k_block(bdata + full_blocks * sizeof(Q3_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
+        case DataType::Q4_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q4_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q4_k_block(bdata + full_blocks * sizeof(Q4_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
+        case DataType::Q5_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q5_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q5_k_block(bdata + full_blocks * sizeof(Q5_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
+        case DataType::Q6_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q6_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q6_k_block(bdata + full_blocks * sizeof(Q6_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
+        case DataType::Q8_K: {
+            const int64_t full_blocks = n_elements / bs;
+            const int64_t remaining = n_elements % bs;
+            if (full_blocks > 0) {
+                dequantize_q8_k(data, out, full_blocks);
+            }
+            if (remaining > 0) {
+                float tmp[QK_K];
+                const auto* bdata = static_cast<const uint8_t*>(data);
+                dequantize_q8_k_block(bdata + full_blocks * sizeof(Q8_KBlock), tmp);
+                std::memcpy(out + full_blocks * bs, tmp, static_cast<size_t>(remaining) * sizeof(float));
+            }
+            break;
+        }
         default:
             // Unsupported quantization type — zero output
             std::memset(out, 0, static_cast<size_t>(n_elements) * sizeof(float));

@@ -60,6 +60,7 @@ set(KAGUYA_SOURCES
     src/core/tensor.cpp
     src/core/model.cpp
     src/core/context.cpp
+    src/core/tokenizer.cpp
     src/loaders/gguf_loader.cpp
     src/loaders/model_loader.cpp
     src/loaders/gguf_parser.cpp
@@ -114,6 +115,7 @@ add_executable(kaguya_tests
     tests/unit/test_c_api.cpp
     tests/unit/test_accuracy.cpp
     tests/unit/test_stability.cpp
+    tests/unit/test_tokenizer.cpp
     tests/integration/test_inference.cpp
 )
 target_link_libraries(kaguya_tests PRIVATE kaguya GTest::gtest_main)

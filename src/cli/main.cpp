@@ -3,6 +3,7 @@
 #include "kaguya/thread_pool.h"
 #include "kaguya/model.h"
 #include "kaguya/model_loader.h"
+#include "kaguya/tokenizer.h"
 #include "kaguya/pipeline.h"
 #include "kaguya/sampling.h"
 #include "kaguya/kernels/dispatcher.h"
@@ -33,39 +34,76 @@ static void signal_handler(int /*sig*/) {
 }
 
 // ============================================================================
-// Simple tokenizer placeholder
+// Tokenizer wrapper — uses BPE if available, falls back to byte-level
 // ============================================================================
 
-/// Minimal byte-level tokenizer for demonstration.
-/// Maps each byte to its ordinal value as a token ID.
-/// In a full implementation, this would use a proper BPE/SentencePiece tokenizer
-/// loaded from the GGUF model's tokenizer metadata.
-class SimpleTokenizer {
+/// Tokenizer interface that wraps either BpeTokenizer or byte-level fallback
+class TokenizerWrapper {
 public:
-    /// Encode text to token IDs (byte-level)
-    std::vector<int32_t> encode(const std::string& text) const {
+    TokenizerWrapper() = default;
+
+    /// Set the BPE tokenizer (from model loader)
+    void set_bpe(const kaguya::BpeTokenizer* bpe) {
+        bpe_ = bpe;
+    }
+
+    /// Encode text to token IDs
+    std::vector<int32_t> encode(const std::string& text, bool add_bos = true) const {
+        if (bpe_ && bpe_->is_valid()) {
+            return bpe_->encode(text, add_bos, false);
+        }
+        // Fallback: byte-level tokenizer
         std::vector<int32_t> tokens;
-        tokens.reserve(text.size());
+        tokens.reserve(text.size() + 1);
+        if (add_bos) {
+            tokens.push_back(0); // BOS at id=0 (convention for byte-level)
+        }
         for (unsigned char c : text) {
             tokens.push_back(static_cast<int32_t>(c));
         }
         return tokens;
     }
 
-    /// Decode token IDs back to text (byte-level)
-    std::string decode(const std::vector<int32_t>& tokens) const {
+    /// Decode token IDs back to text
+    std::string decode(const std::vector<int32_t>& tokens, bool skip_special = true) const {
+        if (bpe_ && bpe_->is_valid()) {
+            return bpe_->decode(tokens, skip_special);
+        }
+        // Fallback: byte-level
         std::string result;
         result.reserve(tokens.size());
         for (int32_t t : tokens) {
             if (t >= 0 && t < 256) {
                 result += static_cast<char>(t);
-            } else {
-                // Non-printable token — skip or render as <T>
-                result += "<T" + std::to_string(t) + ">";
             }
         }
         return result;
     }
+
+    /// Decode a single token
+    std::string decode_token(int32_t token, bool skip_special = true) const {
+        if (bpe_ && bpe_->is_valid()) {
+            return bpe_->decode_token(token, skip_special);
+        }
+        if (token >= 0 && token < 256) {
+            return std::string(1, static_cast<char>(token));
+        }
+        return "";
+    }
+
+    /// Get EOS token ID (-1 if not available)
+    int32_t eos_token_id() const {
+        if (bpe_ && bpe_->is_valid()) {
+            return bpe_->eos_token_id();
+        }
+        return -1;
+    }
+
+    /// Check if BPE tokenizer is available
+    bool has_bpe() const { return bpe_ && bpe_->is_valid(); }
+
+private:
+    const kaguya::BpeTokenizer* bpe_ = nullptr;
 };
 
 // ============================================================================
@@ -228,7 +266,7 @@ static GenerationResult generate_streaming(
     const std::vector<int32_t>& prompt_tokens,
     int n_predict,
     bool stream,
-    const SimpleTokenizer& tokenizer)
+    const TokenizerWrapper& tokenizer)
 {
     GenerationResult result;
     result.tokens_per_sec = 0.0;
@@ -244,6 +282,8 @@ static GenerationResult generate_streaming(
     // Decode phase — token by token
     auto decode_start = std::chrono::steady_clock::now();
 
+    int32_t eos_id = tokenizer.eos_token_id();
+
     for (int i = 0; i < n_predict; ++i) {
         if (g_interrupted) break;
         if (pipeline.current_pos() >= pipeline.model().hparams().context_length) break;
@@ -251,9 +291,12 @@ static GenerationResult generate_streaming(
         int32_t token = pipeline.decode(sampler);
         result.tokens.push_back(token);
 
+        // Check for EOS
+        if (eos_id >= 0 && token == eos_id) break;
+
         if (stream) {
             // Stream individual token
-            std::string text = tokenizer.decode({token});
+            std::string text = tokenizer.decode_token(token);
             std::cout << text << std::flush;
         }
     }
@@ -280,7 +323,7 @@ static void interactive_chat(
     kaguya::Pipeline& pipeline,
     kaguya::Sampler& sampler,
     CliOptions& opts,
-    const SimpleTokenizer& tokenizer)
+    const TokenizerWrapper& tokenizer)
 {
     std::cout << "=== Interactive Chat Mode ===\n";
     std::cout << "Type your prompt and press Enter to generate.\n";
@@ -363,12 +406,7 @@ static void interactive_chat(
         }
 
         // Tokenize and generate
-        auto prompt_tokens = tokenizer.encode(line);
-
-        // Add BOS token if context is fresh
-        if (pipeline.current_pos() == 0 && !prompt_tokens.empty()) {
-            prompt_tokens.insert(prompt_tokens.begin(), 0); // BOS
-        }
+        auto prompt_tokens = tokenizer.encode(line, pipeline.current_pos() == 0);
 
         auto gen_result = generate_streaming(pipeline, sampler, prompt_tokens,
                                               opts.n_predict, opts.stream, tokenizer);
@@ -396,7 +434,7 @@ static void run_benchmark(
     kaguya::Pipeline& pipeline,
     kaguya::Sampler& sampler,
     const CliOptions& opts,
-    const SimpleTokenizer& /*tokenizer*/)
+    const TokenizerWrapper& /*tokenizer*/)
 {
     std::cout << "=== Inference Benchmark ===\n\n";
 
@@ -525,8 +563,22 @@ int main(int argc, char** argv) {
     sampling_params.seed = opts.seed;
     kaguya::Sampler sampler(sampling_params);
 
-    // Simple tokenizer
-    SimpleTokenizer tokenizer;
+    // Set up tokenizer (BPE from model, with byte-level fallback)
+    TokenizerWrapper tokenizer;
+    tokenizer.set_bpe(&loader.tokenizer());
+
+    if (tokenizer.has_bpe()) {
+        std::cout << "Tokenizer: BPE (vocab_size=" << loader.tokenizer().vocab_size();
+        if (loader.tokenizer().bos_token_id() >= 0) {
+            std::cout << ", BOS=" << loader.tokenizer().bos_token_id();
+        }
+        if (loader.tokenizer().eos_token_id() >= 0) {
+            std::cout << ", EOS=" << loader.tokenizer().eos_token_id();
+        }
+        std::cout << ")\n\n";
+    } else {
+        std::cout << "Tokenizer: byte-level (no BPE metadata found)\n\n";
+    }
 
     // Benchmark mode
     if (opts.bench_mode) {
@@ -545,7 +597,6 @@ int main(int argc, char** argv) {
         std::cout << "Prompt: " << opts.prompt_text << "\n\n";
 
         auto prompt_tokens = tokenizer.encode(opts.prompt_text);
-        prompt_tokens.insert(prompt_tokens.begin(), 0); // BOS
 
         auto gen_result = generate_streaming(pipeline, sampler, prompt_tokens,
                                               opts.n_predict, opts.stream, tokenizer);
@@ -568,7 +619,12 @@ int main(int argc, char** argv) {
     {
         std::cout << "Generating " << opts.n_predict << " tokens...\n\n";
 
-        std::vector<int32_t> prompt_tokens = {0}; // BOS
+        std::vector<int32_t> prompt_tokens;
+        if (tokenizer.has_bpe()) {
+            prompt_tokens = tokenizer.encode("", true); // Just BOS token
+        } else {
+            prompt_tokens = {0}; // BOS for byte-level
+        }
         auto gen_result = generate_streaming(pipeline, sampler, prompt_tokens,
                                               opts.n_predict, opts.stream, tokenizer);
 

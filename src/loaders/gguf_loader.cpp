@@ -141,7 +141,7 @@ size_t ggml_type_size(GgmlType gt) {
         case GgmlType::Q5_1:     return 24;   // 32 elements in 24 bytes
         case GgmlType::Q8_0:     return 34;   // 32 elements in 34 bytes
         case GgmlType::Q8_1:     return 36;   // 32 elements in 36 bytes
-        case GgmlType::Q2_K:     return 64;   // 256 elements in 64 bytes
+        case GgmlType::Q2_K:     return 84;   // 256 elements in 84 bytes
         case GgmlType::Q3_K:     return 110;  // 256 elements in 110 bytes
         case GgmlType::Q4_K:     return 144;  // 256 elements in 144 bytes
         case GgmlType::Q5_K:     return 176;  // 256 elements in 176 bytes
